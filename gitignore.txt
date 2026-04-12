@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+*.so
+venv/
+.venv/
+env/
+
+# Config sensible — NE JAMAIS committer
+.env
+
+# Logs
+*.log
+service_a.log
+service_b.log
+
+# State Service B
+responder_state.json
+ip_blacklist.txt
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

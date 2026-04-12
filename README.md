@@ -1,6 +1,3 @@
-# SOAR
-Mise en place de SOAR 12ak_H4ck
-
 # 🛡️ SOC Automation Pipeline
 
 **Splunk → TheHive → Cortex + MISP + VirusTotal → Active Response + Telegram**
@@ -559,4 +556,3 @@ MIT — Rachad Lab SOC Pipeline
 ---
 
 *SOC Automation Pipeline v7.0.0 — Rachad Lab*
-
