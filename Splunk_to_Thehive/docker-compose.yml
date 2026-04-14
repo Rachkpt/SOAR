@@ -1,13 +1,13 @@
 version: "3.7"
 services:
   thehive:
-    image: strangebee/thehive:latest
+    image: strangebee/thehive:5.2
     restart: unless-stopped
     depends_on:
       - cassandra
       - elasticsearch
       - minio
-      - cortex
+      - cortex.local
     mem_limit: 1500m
     ports:
       - "0.0.0.0:9000:9000"
@@ -29,20 +29,16 @@ services:
       - "--s3-secret-key"
       - "minioadmin"
       - "--s3-use-path-access-style"
-      #- "--no-config-cortex"
-      - "--cortex-port"
-      - "9001"
-      - "--cortex-keys"
-      - "vuaNtCWlpewWXzz9JI1L/CD/HsnuWLPC" #remember to change this to your API key
+    #If you are familiar with the previous docker compose file you will note that the Cortex ports and keys have been omitted this is because we can now
+    #complete the integration from TheHive GUI directly.
     volumes:
-      - ./thehive/conf/application.conf:/etc/thehive/application.conf 
+      - thehivedata:/etc/thehive/application.conf
     networks:
       - SOC_NET
 
   cassandra:
     image: 'cassandra:4'
     restart: unless-stopped
-    mem_limit: 1000m
     ports:
       - "0.0.0.0:9042:9042"
     environment:
@@ -51,9 +47,9 @@ services:
       - cassandradata:/var/lib/cassandra
     networks:
       - SOC_NET
-
+    
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.4
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
     restart: unless-stopped
     mem_limit: 512m
     ports:
@@ -83,24 +79,31 @@ services:
     networks:
       - SOC_NET
 
-  cortex:
+#appended .local onto the container name because when we integrate cortex with TheHive using the new GUI menu it only accept a FQDN.
+  cortex.local:
     image: thehiveproject/cortex:latest
     restart: unless-stopped
     environment:
-      - job_directory=/opt/cortex/jobs
+      - job_directory=/tmp/cortex-jobs
+      - docker_job_directory=/tmp/cortex-jobs
     volumes:
-      - cortexdata:/var/run/docker.sock
-      - cortexdata:/opt/cortex/jobs
-      - cortexdata:/var/log/cortex
-      - cortexdata:/cortex/application.conf
+      #For analyzers and responders (called neurons, also based on docker containers) to work, we need to bind the hosts docker socket into the cortex container
+      #so it can use the docker service of the host, and share the job directory between the container and the host.
+      #An alternative way of doing this would be to run docker (neurons) within the cortex docker container (docker-ception), the container will need to be run in 
+      #privileged mode and you will need the --start-docker parameter for this work. It is however not advised to run docker containers in priviliged mode because it
+      #grants the docker container root capabilities over the host system which is a security risk. 
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/cortex-jobs:/tmp/cortex-jobs
+      - ./cortex/logs:/var/log/cortex
+      - ./cortex/application.conf:/cortex/application.conf
     depends_on:
       - elasticsearch
     ports:
       - "0.0.0.0:9001:9001"
     networks:
       - SOC_NET
-
-  misp:
+  #appended .local onto the container name because when we integrate MISP with TheHive using the new GUI menu it only accepts a FQDN.
+  misp.local:
     image: coolacid/misp-docker:core-latest
     restart: unless-stopped
     depends_on: 
@@ -125,7 +128,7 @@ services:
       - "INIT=true"         
       - "CRON_USER_ID=1"   
       - "REDIS_FQDN=redis"
-      - "HOSTNAME=https://10.200.200.253"
+      - "HOSTNAME=https://10.0.2.10"
     networks:
       - SOC_NET
 
@@ -133,7 +136,7 @@ services:
     image: mysql/mysql-server:5.7
     restart: unless-stopped
     volumes:
-      - mispsqldata:/var/lib/mysql   
+      - mispsqldata:/var/lib/mysql
     environment:
       - MYSQL_DATABASE=mispdb
       - MYSQL_USER=mispuser
@@ -142,7 +145,7 @@ services:
     networks:
       - SOC_NET
   redis:
-    image: redis:5.0.6
+    image: redis:latest
     networks:
       - SOC_NET
   misp-modules:
@@ -153,13 +156,13 @@ services:
       - redis
       - misp_mysql
     networks:
-      - SOC_NET   
-
+      - SOC_NET
+  #removed the cortex volumes as we no longer require it, cortex will share the /tmp directory for jobs, the logs and application files will be stored in the cortex folder
+  #in the same directory on the host where the docker-compose.yml resides for ease of access. 
 volumes:
   miniodata:
   cassandradata:
   elasticsearchdata:
-  cortexdata:
   thehivedata:
   mispsqldata:
 
