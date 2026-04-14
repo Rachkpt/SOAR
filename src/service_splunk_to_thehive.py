@@ -76,8 +76,8 @@ from thehive4py.models import Alert, AlertArtifact
 # ──────────────────────────────────────────────────────────────────
 class Config:
     # TheHive
-    THEHIVE_URL    = os.getenv("THEHIVE_URL",    "http://10.2.3.122:9000")
-    THEHIVE_APIKEY = os.getenv("THEHIVE_APIKEY", "J9LiEsGJDFFfDmBuAKyj+MUmWyytwNTx")
+    THEHIVE_URL    = os.getenv("THEHIVE_URL",    "http://10.2.3.119:9000")
+    THEHIVE_APIKEY = os.getenv("THEHIVE_APIKEY", "wmty+KZKe1vg5GgSDPH1y92BH+DIsJoh")
 
     # Webhook
     LISTEN_HOST  = os.getenv("LISTEN_HOST", "0.0.0.0")
