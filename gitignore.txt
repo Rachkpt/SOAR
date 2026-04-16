@@ -1,36 +1,54 @@
+# ══════════════════════════════════════════════════════════════════
+#  SOC Automation Pipeline — .gitignore
+# ══════════════════════════════════════════════════════════════════
+
+# Configuration sensible — NE JAMAIS commiter
+.env
+
+# Fichiers générés automatiquement
+*.log
+ip_blacklist.json
+ip_blacklist.txt
+responder_state.json
+
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.pyc
 *.pyo
 *.pyd
 .Python
-*.egg
-*.egg-info/
-dist/
-build/
-*.so
+
+# Environnements virtuels
 venv/
-.venv/
 env/
+.venv/
+.env/
+ENV/
 
-# Config sensible — NE JAMAIS committer
-.env
-
-# Logs
-*.log
-service_a.log
-service_b.log
-
-# State Service B
-responder_state.json
-ip_blacklist.txt
-
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Jupyter
+*.ipynb_checkpoints
