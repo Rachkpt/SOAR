@@ -78,6 +78,10 @@ Tout est 100% automatique, sans intervention humaine.
                  └────────────┘
 ```
 
+<img width="7019" height="4963" alt="topo" src="https://github.com/user-attachments/assets/2a2217a4-1cdf-4592-83ac-157d1a0552c7" />
+
+
+
 ### Composants
 
 | Composant | Rôle | Port |
