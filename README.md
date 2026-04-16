@@ -1,5 +1,8 @@
 # 🛡️ SOC Automation Pipeline
 
+https://youtu.be/Vr4flc55S5c?si=qLxa2TOXnKDyFF3E   -------> INSTALLATION  DE thehive cortex et MISP
+https://youtu.be/ovUuNQsW_FQ?si=78tJLYF-q40kjAHR --------> integratine des 3 
+
 **Splunk → TheHive → Cortex + MISP + VirusTotal → Active Response + Telegram**
 
 Pipeline SOC complet et autonome : détection dans Splunk, création automatique de cas dans TheHive, enrichissement multi-sources (VirusTotal, Cortex, MISP) et réponse active aux incidents.
