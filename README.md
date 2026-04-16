@@ -132,8 +132,8 @@ Splunk     >= 8.0  (ou tout système capable d'envoyer des webhooks HTTP)
 ### 1. Cloner le dépôt
 
 ```bash
-git clone https://github.com/TON-USERNAME/soc-automation-pipeline.git
-cd soc-automation-pipeline
+ clone https://github.com/Rachkpt/SOAR.git
+cd SOAR
 ```
 
 ### 2. Créer un environnement virtuel (recommandé)
