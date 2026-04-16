@@ -683,6 +683,8 @@ MIT License — voir [LICENSE](LICENSE)
 
 | Technologie | Usage |
 |-------------|-------|
+| Tuto Installation TheHive Crortex MISP  | ---> https://youtu.be/Vr4flc55S5c?si=6NNDCI1J6VGavFz8
+| intégrer Cortex et MISP à TheHive dans votre SOC |--->  https://youtu.be/ovUuNQsW_FQ?si=MKPUYpWmnugg-gpT
 | [TheHive](https://thehive-project.org) | Gestion des cas de sécurité |
 | [Cortex](https://github.com/TheHive-Project/Cortex) | Analyse automatique des observables |
 | [MISP](https://www.misp-project.org) | Threat Intelligence |
