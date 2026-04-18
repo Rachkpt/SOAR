@@ -102,6 +102,9 @@ Dès qu'une alerte arrive depuis **Splunk** (ou tout SIEM compatible webhook) :
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+<img width="7019" height="4963" alt="topo1" src="https://github.com/user-attachments/assets/1f498768-0520-4636-9b09-64a13b8b9deb" />
+
+
 ### Stack technique
 
 | Composant | Rôle | Port | Technologie |
