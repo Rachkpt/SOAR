@@ -198,8 +198,8 @@ docker compose version
 ### 2. Cloner le dépôt
 
 ```bash
-git clone https://github.com/TON-USERNAME/soc-automation-pipeline.git
-cd soc-automation-pipeline
+git clone https://github.com/Rachkpt/SOAR.git
+cd SOAR
 ```
 
 ### 3. Préparer la structure des dossiers
