@@ -469,7 +469,7 @@ sudo tail -f /var/log/suricata/fast.log
 
 ```bash
 # Aller dans le dossier du projet
-cd soc-automation-pipeline
+cd SOAR
 
 # Créer un environnement virtuel
 python3 -m venv venv
