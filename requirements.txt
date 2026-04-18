@@ -1,19 +1,16 @@
 # ══════════════════════════════════════════════════════════════════
 #  SOC Automation Pipeline — Dépendances Python
-#  Compatible : Python 3.8+
-#  Install : pip install -r requirements.txt
+#  Installation : pip install -r requirements.txt
 # ══════════════════════════════════════════════════════════════════
 
-# Web framework (Service A webhook)
-flask>=3.0.0
+# Framework web (Service A — webhook)
+flask>=2.3.0
 
-# TheHive client
-# Note: v1.x pour TheHive v4/v5 avec API legacy
-# Si TheHive v5 pur : pip install thehive4py>=2.0
-thehive4py>=1.8.1,<2.0
-
-# HTTP client (VirusTotal, MISP, Cortex, Telegram)
+# Client HTTP
 requests>=2.31.0
 
-# SSL (pour MISP avec certificat auto-signé)
-urllib3>=2.0.0
+# Client TheHive officiel
+thehive4py>=1.8.1
+
+# Utilitaires (inclus dans Python stdlib mais précisés pour clarté)
+# pathlib, threading, json, hashlib, logging → stdlib Python 3.8+
