@@ -2,16 +2,31 @@
 #  SOC Automation Pipeline — .gitignore
 # ══════════════════════════════════════════════════════════════════
 
-# Configuration sensible — NE JAMAIS commiter
+# --- Configuration sensible — NE JAMAIS COMMITER ---
 .env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+*.p12
 
-# Fichiers générés automatiquement
+# --- Données générées à l'exécution ---
+data/
+logs/
 *.log
 ip_blacklist.json
 ip_blacklist.txt
 responder_state.json
 
-# Python
+# --- Montages runtime Docker (MISP / Cortex) ---
+docker/cortex/logs/
+docker/logs/
+docker/files/
+docker/ssl/
+docker/server-configs/
+
+# --- Python ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -20,35 +35,35 @@ __pycache__/
 *.pyd
 .Python
 
-# Environnements virtuels
+# --- Environnements virtuels ---
 venv/
 env/
 .venv/
-.env/
 ENV/
 
-# IDEs
+# --- IDE ---
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# --- Système d'exploitation ---
 .DS_Store
 Thumbs.db
 desktop.ini
 
-# Distribution / packaging
+# --- Distribution / packaging ---
 dist/
 build/
 *.egg-info/
 *.egg
 
-# Tests
+# --- Tests ---
+tests/.tmp/
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Jupyter
+# --- Jupyter ---
 *.ipynb_checkpoints

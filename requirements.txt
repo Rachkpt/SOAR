@@ -1,16 +1,29 @@
 # ══════════════════════════════════════════════════════════════════
 #  SOC Automation Pipeline — Dépendances Python
 #  Installation : pip install -r requirements.txt
+#                 (ou : python start.py install)
+#  Python 3.8 minimum — testé jusqu'à Python 3.13
 # ══════════════════════════════════════════════════════════════════
 
-# Framework web (Service A — webhook)
+# Service A — serveur webhook qui reçoit les alertes Splunk
 flask>=2.3.0
 
-# Client HTTP
+# Client HTTP utilisé pour TheHive, Cortex, MISP, VirusTotal et Telegram
 requests>=2.31.0
 
-# Client TheHive officiel
-thehive4py>=1.8.1
+# Utilisé pour désactiver proprement les avertissements TLS quand MISP
+# est en certificat auto-signé (MISP_VERIFY_SSL=false)
+urllib3>=1.26.0
 
-# Utilitaires (inclus dans Python stdlib mais précisés pour clarté)
-# pathlib, threading, json, hashlib, logging → stdlib Python 3.8+
+# ══════════════════════════════════════════════════════════════════
+#  Note — thehive4py n'est PAS utilisé, volontairement.
+#
+#  thehive4py 1.x est abandonné (il cible TheHive 3/4) et dépend de
+#  `python-magic`, qui nécessite la bibliothèque native libmagic :
+#  sous Windows l'import plante purement et simplement l'interpréteur.
+#  thehive4py 2.x a une API totalement différente.
+#
+#  Le projet parle donc directement à l'API REST v1 de TheHive 5 via
+#  src/soc_common.py (classe TheHiveClient) : zéro dépendance native,
+#  même comportement sur Windows, Linux et macOS.
+# ══════════════════════════════════════════════════════════════════

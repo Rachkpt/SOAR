@@ -1,12 +1,13 @@
-# 🛡️ SOC Automation Pipeline
+# 🛡️ SOC Automation Pipeline (SOAR)
 
 <div align="center">
 
-**Pipeline de réponse aux incidents 100% automatique**
-Splunk → TheHive → Cortex → MISP → VirusTotal → Firewall → Telegram
+**Pipeline de détection et de réponse aux incidents, 100 % automatique**
+
+Suricata / Splunk → TheHive → Cortex → MISP → VirusTotal → Firewall → Telegram
 
 [![Python](https://img.shields.io/badge/Python-3.8%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![TheHive](https://img.shields.io/badge/TheHive-5.2.x-F5A800?style=for-the-badge)](https://thehive-project.org)
+[![TheHive](https://img.shields.io/badge/TheHive-5.2.x-F5A800?style=for-the-badge)](https://docs.strangebee.com/thehive/)
 [![Cortex](https://img.shields.io/badge/Cortex-3.x-FF6B35?style=for-the-badge)](https://github.com/TheHive-Project/Cortex)
 [![MISP](https://img.shields.io/badge/MISP-2.4%2B-CC0000?style=for-the-badge)](https://www.misp-project.org)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?style=for-the-badge&logo=docker&logoColor=white)](https://docs.docker.com/compose)
@@ -16,117 +17,195 @@ Splunk → TheHive → Cortex → MISP → VirusTotal → Firewall → Telegram
 
 ---
 
-## 📖 Table des Matières
+## 📖 Sommaire
 
 - [Vue d'ensemble](#-vue-densemble)
-- [Architecture](#-architecture)
-- [Prérequis](#-prérequis)
-- [Installation de l'infrastructure](#-installation-de-linfrastructure-docker)
-- [Configuration TheHive + Cortex + MISP](#-configuration-thehive--cortex--misp)
-- [Configuration Suricata IDS](#-configuration-suricata-ids)
-- [Installation du Pipeline SOC](#-installation-du-pipeline-soc)
-- [Fichier de configuration .env](#-fichier-de-configuration-env)
-- [Configuration Splunk](#-configuration-splunk)
-- [Démarrage](#-démarrage)
-- [Flux automatique complet](#-flux-automatique-complet)
-- [Endpoints Service A](#-endpoints-service-a)
-- [Commandes CLI](#-commandes-cli)
-- [Notifications Telegram](#-notifications-telegram)
+- [Architecture](#️-architecture)
 - [Structure du projet](#-structure-du-projet)
+- [Démarrage rapide](#-démarrage-rapide-5-commandes)
+- [Prérequis](#-prérequis)
+- [1. Infrastructure Docker](#1️⃣-infrastructure-docker)
+- [2. Configuration TheHive + Cortex + MISP](#2️⃣-configuration-thehive--cortex--misp)
+- [3. Suricata IDS](#3️⃣-suricata-ids)
+- [4. Splunk](#4️⃣-splunk)
+- [5. Installation du pipeline Python](#5️⃣-installation-du-pipeline-python)
+- [6. Fichier .env](#6️⃣-fichier-env)
+- [Démarrage](#-démarrage)
+- [Flux automatique détaillé](#-flux-automatique-détaillé)
+- [Réponse active : quoi est bloqué et quand](#-réponse-active--quoi-est-bloqué-et-quand)
+- [Endpoints du Service A](#-endpoints-du-service-a)
+- [Commandes CLI](#️-commandes-cli)
+- [Notifications Telegram](#-notifications-telegram)
+- [Tests](#-tests)
 - [Dépannage](#-dépannage)
+- [Sécurité](#-sécurité)
+- [Références et documentation détaillée](#-références-et-documentation-détaillée)
+- [Journal des versions](#-journal-des-versions)
 
 ---
 
 ## 🔭 Vue d'ensemble
 
-Ce projet est un **pipeline SOC (Security Operations Center) complet** qui automatise entièrement la détection et la réponse aux incidents de sécurité.
+Ce projet est un **SOAR** (Security Orchestration, Automation and Response) complet
+pour lab SOC. Dès qu'une alerte arrive depuis **Splunk** ou **Suricata**, la chaîne
+suivante se déroule sans aucune intervention humaine :
 
-### Ce que fait le pipeline
+| Étape | Action | Composant |
+|-------|--------|-----------|
+| 1 | Réception de l'alerte par webhook HTTP | Service A (Flask) |
+| 2 | Extraction des IoCs (IP, hash, domaine, URL) | Service A |
+| 3 | Enrichissement VirusTotal | API VirusTotal v3 |
+| 4 | Création de l'**alerte** dans TheHive | API REST TheHive v1 |
+| 5 | Promotion de l'alerte en **cas** d'investigation | Service B |
+| 6 | Ajout des observables au cas | API REST TheHive v1 |
+| 7 | **Lancement automatique des analyseurs Cortex** | Cortex via TheHive |
+| 8 | Lookup et publication d'IoC dans MISP | API MISP |
+| 9 | **Blocage firewall** de l'IP attaquante | netsh / iptables |
+| 10 | Rapport markdown dans le cas + notification | TheHive + Telegram |
+| 11 | Déblocage automatique après expiration du timer | Service B |
 
-Dès qu'une alerte arrive depuis **Splunk** (ou tout SIEM compatible webhook) :
+### Ce qui a changé dans cette version
 
-| Étape | Action | Outil |
-|-------|--------|-------|
-| 1 | Réception de l'alerte via webhook | Service A (Flask) |
-| 2 | Enrichissement des IoCs | VirusTotal API |
-| 3 | Création alerte dans TheHive | TheHive 5 |
-| 4 | Promotion alerte → Cas d'investigation | Service B |
-| 5 | Ajout des observables au cas | TheHive API |
-| 6 | Analyse automatique des IoCs | Cortex (via TheHive) |
-| 7 | Lookup et partage des IoCs | MISP |
-| 8 | Blocage firewall des IPs malveillantes | netsh / iptables |
-| 9 | Notification à chaque étape | Telegram + Gmail |
+Le pipeline a été entièrement réorganisé et corrigé :
 
-**Tout est 100% automatique**, sans intervention humaine nécessaire.
+- **Plus de `thehive4py`.** La bibliothèque est abandonnée et dépend de `libmagic`,
+  dont l'import **fait planter l'interpréteur Python sous Windows**. Le projet parle
+  maintenant directement à l'**API REST v1 de TheHive 5**.
+- **Cortex se lance vraiment tout seul.** Les analyseurs sont découverts via
+  `/api/connector/cortex/analyzer` de TheHive (la source de vérité), avec repli sur
+  l'API Cortex directe, deux routes de lancement et un rafraîchissement automatique
+  si Cortex démarre après le Service B.
+- **Le blocage couvre bien plus que le brute force** : scan de ports NMAP, shells
+  Metasploit, mouvement latéral, vol d'identifiants, rançongiciel, exfiltration,
+  verdicts VirusTotal et hits MISP (voir [le tableau des déclencheurs](#-réponse-active--quoi-est-bloqué-et-quand)).
+- **135 tests unitaires** hors ligne, exécutables par `python start.py unit`.
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        RÉSEAU SOC                               │
-│                                                                 │
-│  ┌──────────┐   webhook    ┌─────────────────────────────────┐  │
-│  │  Splunk  │ ────────────▶│         Service A               │  │
-│  │  (SIEM)  │  POST /alert │     Flask Webhook :5000         │  │
-│  └──────────┘              └──────────────┬──────────────────┘  │
-│                                           │ Crée alerte         │
-│  ┌──────────┐                             ▼                     │
-│  │ Suricata │ ──── logs ──▶  ┌────────────────────────┐        │
-│  │  (IDS)   │               │       TheHive :9000      │◀──┐   │
-│  └──────────┘               │   Alertes & Cas         │   │   │
-│                             └────────────┬───────────┘   │   │
-│                                          │ poll /20s      │   │
-│                                          ▼                │   │
-│                             ┌────────────────────────┐    │   │
-│                             │       Service B         │────┘   │
-│                             │  Responder Full Auto    │        │
-│                             └───┬────┬────┬───────────┘        │
-│                                 │    │    │                     │
-│                    ┌────────────┘    │    └──────────────┐      │
-│                    ▼                ▼                    ▼      │
-│           ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│           │    Cortex    │  │     MISP     │  │ VirusTotal   │ │
-│           │   :9001      │  │    :443      │  │   (API v3)   │ │
-│           │ AbuseIPDB    │  │  IoC DB      │  │ IPs/Hashes   │ │
-│           │ MaxMind      │  │  Threat Intel│  │ Domaines     │ │
-│           └──────────────┘  └──────────────┘  └──────────────┘ │
-│                    │                                            │
-│                    ▼                                            │
-│           ┌──────────────┐        ┌──────────────┐             │
-│           │   Firewall   │        │   Telegram   │             │
-│           │ netsh/iptables│        │     Bot      │             │
-│           │ Blocage auto │        │ Notifications│             │
-│           └──────────────┘        └──────────────┘             │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                            RÉSEAU SOC                                │
+│                                                                      │
+│  ┌──────────┐                                                        │
+│  │ Suricata │ ── eve.json ──┐                                        │
+│  │  (IDS)   │               │                                        │
+│  └──────────┘               ▼                                        │
+│                        ┌──────────┐   webhook    ┌────────────────┐  │
+│                        │  Splunk  │ ────────────▶│   Service A    │  │
+│                        │  (SIEM)  │  POST /alert │  Flask :5000   │  │
+│                        └──────────┘              └───────┬────────┘  │
+│                                                          │ alerte    │
+│                                                          ▼           │
+│                                            ┌─────────────────────┐   │
+│                                            │    TheHive :9000    │◀─┐│
+│                                            │   Alertes  &  Cas   │  ││
+│                                            └──────────┬──────────┘  ││
+│                                                       │ poll 20 s   ││
+│                                                       ▼             ││
+│                                            ┌─────────────────────┐  ││
+│                                            │     Service B       │──┘│
+│                                            │  Responder auto     │   │
+│                                            └──┬─────┬─────┬──────┘   │
+│                        ┌──────────────────────┘     │     └───────┐  │
+│                        ▼                            ▼             ▼  │
+│               ┌─────────────┐            ┌─────────────┐  ┌──────────┴──┐
+│               │   Cortex    │            │    MISP     │  │ VirusTotal  │
+│               │   :9001     │            │   :80/443   │  │   API v3    │
+│               │ AbuseIPDB   │            │  IoC / TI   │  │ IP · hash   │
+│               │ MaxMind     │            │             │  │ domaine·URL │
+│               │ Shodan…     │            └─────────────┘  └─────────────┘
+│               └─────────────┘                                        │
+│                        │                                             │
+│          ┌─────────────┴─────────────┐                               │
+│          ▼                           ▼                               │
+│  ┌───────────────┐          ┌────────────────┐                       │
+│  │   Firewall    │          │    Telegram    │                       │
+│  │ netsh/iptables│          │      Bot       │                       │
+│  │ blocage + TTL │          │ notifications  │                       │
+│  └───────────────┘          └────────────────┘                       │
+└──────────────────────────────────────────────────────────────────────┘
 ```
-
-<img width="7019" height="4963" alt="topo1" src="https://github.com/user-attachments/assets/1f498768-0520-4636-9b09-64a13b8b9deb" />
-
 
 ### Stack technique
 
-| Composant | Rôle | Port | Technologie |
-|-----------|------|------|-------------|
-| **Service A** | Webhook Flask — reçoit alertes Splunk | 5000 | Python / Flask |
+| Composant | Rôle | Port | Techno |
+|-----------|------|------|--------|
+| **Service A** | Webhook Flask — reçoit les alertes Splunk | 5000 | Python / Flask |
 | **Service B** | Responder — orchestre tout le pipeline | — | Python |
-| **TheHive** | Gestion des alertes et cas | 9000 | Java / Cassandra |
-| **Cortex** | Moteur d'analyse automatique | 9001 | Java / Docker |
-| **MISP** | Threat Intelligence Platform | 80/443 | PHP / MySQL |
-| **Elasticsearch** | Backend index TheHive | 9200 | Java |
-| **Cassandra** | Base de données TheHive | 9042 | Java |
-| **MinIO** | Stockage fichiers TheHive | 9002 | Go |
+| **TheHive** | Gestion des alertes et des cas | 9000 | Scala / Cassandra |
+| **Cortex** | Moteur d'analyse automatique | 9001 | Scala / Docker |
+| **MISP** | Threat Intelligence Platform | 80 / 443 | PHP / MySQL |
+| **Elasticsearch** | Index de TheHive et Cortex | 9200 | Java |
+| **Cassandra** | Base de données de TheHive | 9042 | Java |
+| **MinIO** | Stockage des pièces jointes | 9002 | Go |
 | **Suricata** | IDS réseau | — | C |
+
+---
+
+## 📁 Structure du projet
+
+```
+SOAR/
+│
+├── start.py                              # Lanceur universel (stdlib seulement)
+├── requirements.txt                      # Dépendances Python
+├── .env.example                          # Modèle de configuration
+├── .gitignore
+├── LICENSE
+├── README.md
+│
+├── src/
+│   ├── soc_common.py                     # Socle partagé : .env, logs, client
+│   │                                     # TheHive REST v1, Observable, Telegram
+│   ├── service_a_splunk_to_thehive.py    # Service A — webhook          v8.0.0
+│   └── service_b_thehive_responder.py    # Service B — responder auto   v11.0.0
+│
+├── docker/
+│   ├── docker-compose.yml                # TheHive + Cortex + MISP + dépendances
+│   ├── cortex/application.conf           # Configuration Cortex
+│   └── thehive/application.conf          # Connecteur MISP (optionnel)
+│
+├── suricata/
+│   └── soc-custom.rules                  # Règles NMAP / Metasploit
+│
+├── tests/
+│   ├── harness.py                        # Mini-harnais (aucune dépendance)
+│   ├── run_tests.py                      # Lance toutes les suites
+│   ├── test_soc_common.py                # 33 tests
+│   ├── test_service_a.py                 # 54 tests
+│   └── test_service_b.py                 # 48 tests
+│
+├── data/                                 # Généré : état, blacklist  (git-ignoré)
+└── logs/                                 # Généré : journaux         (git-ignoré)
+```
+
+---
+
+## ⚡ Démarrage rapide (5 commandes)
+
+```bash
+git clone https://github.com/Rachkpt/SOAR.git
+cd SOAR
+
+python start.py install          # installe flask, requests, urllib3
+python start.py init             # crée .env depuis .env.example
+# éditer .env : THEHIVE_URL + THEHIVE_APIKEY au minimum
+python start.py status           # vérifie que tout est en place
+python start.py both             # lance les Services A et B
+```
+
+Sans argument, `python start.py` ouvre un **menu interactif** qui couvre tout.
 
 ---
 
 ## ✅ Prérequis
 
-### Système d'exploitation recommandé
+### Système
 
-> **Ubuntu 22.04 LTS** est recommandé pour le serveur hébergeant Docker.
-> Le pipeline Python fonctionne sur Windows, Linux et macOS.
+> **Ubuntu 22.04 LTS** est recommandé pour le serveur Docker.
+> Le pipeline Python tourne sur Windows, Linux et macOS.
 
 | OS | Statut |
 |----|--------|
@@ -136,7 +215,7 @@ Dès qu'une alerte arrive depuis **Splunk** (ou tout SIEM compatible webhook) :
 | CentOS / RHEL 8+ | ✅ Supporté |
 | macOS 12+ | ⚠️ Sans blocage firewall |
 
-### Ressources minimales (serveur Docker)
+### Ressources du serveur Docker
 
 | Ressource | Minimum | Recommandé |
 |-----------|---------|------------|
@@ -144,44 +223,44 @@ Dès qu'une alerte arrive depuis **Splunk** (ou tout SIEM compatible webhook) :
 | RAM | 8 Go | 16 Go |
 | Disque | 50 Go | 100 Go SSD |
 
-### Logiciels requis
+### Logiciels
 
 ```
 Docker          >= 20.10
 Docker Compose  >= 2.0
-Python          >= 3.8
+Python          >= 3.8   (testé jusqu'à 3.13)
 pip             >= 21.0
 ```
 
-### Clés API nécessaires
+### Clés API
 
-| Service | Où obtenir | Gratuit |
-|---------|-----------|---------|
-| **TheHive** | Profil utilisateur → API Key | ✅ |
-| **Cortex** | Users → API Key | ✅ |
-| **MISP** | Administration → Auth Keys | ✅ |
-| **VirusTotal** | [virustotal.com/gui/join-us](https://www.virustotal.com/gui/join-us) | ✅ (500 req/jour) |
-| **Telegram Bot** | [@BotFather](https://t.me/BotFather) sur Telegram | ✅ |
-| **AbuseIPDB** | [abuseipdb.com/register](https://www.abuseipdb.com/register) | ✅ |
+| Service | Où l'obtenir | Gratuit |
+|---------|--------------|---------|
+| **TheHive** | avatar → Settings → API Keys → Create | ✅ |
+| **Cortex** | Organizations → Users → Create API Key | ✅ |
+| **MISP** | Administration → List Auth Keys → Add | ✅ |
+| **VirusTotal** | [virustotal.com/gui/join-us](https://www.virustotal.com/gui/join-us) | ✅ 500 req/jour |
+| **AbuseIPDB** | [abuseipdb.com/register](https://www.abuseipdb.com/register) | ✅ 1 000 req/jour |
+| **Telegram Bot** | [@BotFather](https://t.me/BotFather) | ✅ |
+| **Shodan** (option) | [account.shodan.io/register](https://account.shodan.io/register) | ⚠️ limité |
 
 ---
 
-## 🐳 Installation de l'Infrastructure (Docker)
+## 1️⃣ Infrastructure Docker
 
-### 1. Installer Docker et Docker Compose
+### Installer Docker et Docker Compose
+
+📚 Documentation officielle : **[docs.docker.com/engine/install/ubuntu](https://docs.docker.com/engine/install/ubuntu/)**
 
 ```bash
-# Ubuntu / Debian
 sudo apt update && sudo apt upgrade -y
 sudo apt install -y ca-certificates curl gnupg lsb-release
 
-# Clé GPG Docker
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
   sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 sudo chmod a+r /etc/apt/keyrings/docker.gpg
 
-# Dépôt Docker
 echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
   https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
   sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
@@ -189,461 +268,241 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.
 sudo apt update
 sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-# Ajouter votre utilisateur au groupe docker
-sudo usermod -aG docker $USER
-newgrp docker
-
-# Vérifier
-docker --version
-docker compose version
+sudo usermod -aG docker $USER && newgrp docker
+docker --version && docker compose version
 ```
 
-### 2. Cloner le dépôt
+### Préparer et lancer la stack
 
 ```bash
-git clone https://github.com/Rachkpt/SOAR.git
-cd SOAR
-```
+cd SOAR/docker
 
-### 3. Préparer la structure des dossiers
+# Dossiers montés par docker-compose
+mkdir -p cortex/logs server-configs logs files ssl
 
-```bash
-mkdir -p cortex/logs
-mkdir -p server-configs logs files ssl
-
-# Créer le fichier de configuration Cortex minimal
-cat > cortex/application.conf << 'EOF'
-play.http.secret.key = "CortexTestPassword"
-
-search {
-  index = cortex
-  uri = "http://elasticsearch:9200"
-}
-
-analyzer {
-  urls = [
-    "https://download.thehive-project.org/analyzers.json"
-  ]
-}
-
-responder {
-  urls = [
-    "https://download.thehive-project.org/responders.json"
-  ]
-}
-EOF
-```
-
-### 4. Ajuster les paramètres kernel pour Elasticsearch
-
-```bash
-# Requis pour Elasticsearch
+# Requis par Elasticsearch, sinon le conteneur boucle au démarrage
 sudo sysctl -w vm.max_map_count=262144
 echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf
-```
 
-### 5. Lancer l'infrastructure
+# Optionnel : URL réelle de MISP
+echo "MISP_BASEURL=https://$(hostname -I | awk '{print $1}')" > .env
 
-```bash
 docker compose up -d
-
-# Vérifier que tous les conteneurs tournent
 docker compose ps
 ```
 
-Attendre environ **3-5 minutes** que tous les services démarrent.
+Compter **3 à 5 minutes** pour que tout démarre.
 
 ```bash
-# Surveiller les logs
 docker compose logs -f thehive
-docker compose logs -f cortex
+docker compose logs -f cortex.local
 ```
 
-### 6. Vérifier les services
+### Vérifier les services
 
-| Service | URL | Identifiants par défaut |
-|---------|-----|------------------------|
-| TheHive | http://VOTRE_IP:9000 | Créer un compte admin au premier accès |
-| Cortex | http://VOTRE_IP:9001 | Créer un compte admin au premier accès |
-| MISP | http://VOTRE_IP ou https://VOTRE_IP | admin@admin.test / admin |
-| MinIO | http://VOTRE_IP:9002 | minioadmin / minioadmin |
-| Elasticsearch | http://VOTRE_IP:9200 | Aucun (pas d'auth) |
+| Service | URL | Identifiants |
+|---------|-----|--------------|
+| TheHive | `http://VOTRE_IP:9000` | compte admin créé au 1er accès |
+| Cortex | `http://VOTRE_IP:9001` | compte admin créé au 1er accès |
+| MISP | `https://VOTRE_IP` | `admin@admin.test` / `admin` |
+| MinIO | `http://VOTRE_IP:9002` | `minioadmin` / `minioadmin` |
+| Elasticsearch | `http://VOTRE_IP:9200` | aucune authentification |
 
 ---
 
-## ⚙️ Configuration TheHive + Cortex + MISP
+## 2️⃣ Configuration TheHive + Cortex + MISP
 
-### TheHive — Premier démarrage
+### TheHive — premier démarrage
 
-1. Ouvrir `http://VOTRE_IP:9000`
-2. Cliquer **"Create a new database"** → attendre l'initialisation
-3. Créer un compte administrateur
-4. Aller dans **Organisation** → créer votre organisation
-5. Créer un utilisateur avec rôle **analyst**
-6. Aller dans **Profil** → **API Key** → **Créer** → copier la clé
+📚 [Guide officiel TheHive 5](https://docs.strangebee.com/thehive/installation/) ·
+[Documentation API](https://docs.strangebee.com/thehive/api-docs/)
 
-### Cortex — Configuration
+1. Ouvrir `http://VOTRE_IP:9000` → **Create a new database**
+2. Créer le compte administrateur
+3. **Organisations** → créer votre organisation
+4. **Users** → créer un utilisateur avec le profil `analyst`
+5. Sur cet utilisateur : **API Keys** → **Create** → copier la clé
+   → c'est la valeur de `THEHIVE_APIKEY` dans `.env`
 
-1. Ouvrir `http://VOTRE_IP:9001`
-2. Cliquer **"Update Database"** → initialisation
-3. Créer un compte admin
-4. **Organizations** → **Add Organization** → donner un nom
-5. **Users** → **Add User** → rôle `read,analyze` → **Create API Key** → copier
-6. **Organizations** → votre org → **Analyzers** → activer :
-   - `AbuseIPDB_2_0` → configurer votre clé API AbuseIPDB
-   - `VirusTotal_GetReport_3_0` → configurer votre clé VT
-   - `MaxMind_GeoIP_4_0`
-   - `Shodan_Host_2_0` (optionnel)
+> La clé doit appartenir à un utilisateur de l'organisation, pas au super-admin :
+> le super-admin n'a pas accès aux cas.
+
+### Cortex — configuration
+
+📚 [Documentation Cortex](https://github.com/TheHive-Project/CortexDocs) ·
+[Catalogue des analyseurs](https://github.com/TheHive-Project/Cortex-Analyzers)
+
+1. Ouvrir `http://VOTRE_IP:9001` → **Update Database**
+2. Créer le compte admin
+3. **Organizations** → **Add Organization**
+4. **Users** → **Add User** → rôles `read, analyze, orgadmin` → **Create API Key**
+5. **Organizations** → votre org → **Analyzers** → activer et configurer :
+
+| Analyseur | Type d'observable | Clé API requise |
+|-----------|-------------------|-----------------|
+| `AbuseIPDB_1_0` | ip | AbuseIPDB |
+| `VirusTotal_GetReport_3_1` | ip, hash, domain, url | VirusTotal |
+| `MaxMind_GeoIP_4_0` | ip | aucune |
+| `Shodan_Host_1_0` | ip | Shodan |
+| `OTXQuery_2_0` | ip, hash, domain, url | AlienVault OTX |
+| `URLhaus_2_0` | url, domain, hash | aucune |
 
 ```bash
-# S'assurer que python3 est disponible pour les analyseurs Cortex
-# Sur le serveur hébergeant Docker :
-which python3
-python3 --version
-
-# Si absent :
-sudo apt install python3 python3-pip -y
+# Les analyseurs sont des conteneurs Docker : vérifier que Cortex peut les lancer
+docker compose logs cortex.local | grep -i analyzer
+docker images | grep cortexneurons
 ```
 
-### Intégration TheHive ↔ Cortex (via GUI)
+### Connecter TheHive ↔ Cortex
 
-1. Dans TheHive → **Organisation** → **Connectors**
-2. **Cortex** → **Add Cortex server**
-3. Remplir :
+📚 [Guide d'intégration](https://docs.strangebee.com/thehive/administration/connectors/cortex/)
+
+1. TheHive → **Organisation** → **Connectors** → **Cortex** → **Add Cortex server**
+2. Renseigner :
    - **Name** : `cortex.local`
    - **URL** : `http://cortex.local:9001`
-   - **API Key** : votre clé Cortex
-4. Cliquer **Test** → doit afficher ✅
+   - **API Key** : la clé Cortex
+3. **Test** → doit afficher ✅
 
-### MISP — Configuration initiale
+Vérification côté pipeline :
 
-1. Ouvrir `https://VOTRE_IP` (ignorer l'avertissement SSL)
-2. Se connecter : `admin@admin.test` / `admin`
-3. **Changer le mot de passe** immédiatement
-4. **Administration** → **Server Settings** → changer `MISP.baseurl` avec votre IP
-5. **Administration** → **Auth Keys** → **Add authentication key** → copier
-
-### Intégration TheHive ↔ MISP
-
-Dans TheHive → **Organisation** → **Connectors** → **MISP** → **Add MISP server** :
-
-```
-Name    : misp.local
-URL     : https://misp.local
-API Key : VOTRE_CLE_MISP
+```bash
+python start.py cortex
+# Cortex : 8 analyseur(s) détecté(s) via TheHive
 ```
 
-Ou via le fichier de configuration (si non Docker) :
+Si le compte est à `0`, le Service B ne pourra rien lancer : reprendre cette étape.
 
-```hocon
-play.modules.enabled += org.thp.thehive.connector.misp.MispModule
+### MISP — configuration
 
-misp {
-  interval: 1 hour
-  servers: [
-    {
-      name = "MISP"
-      url  = "https://misp.local"
-      auth {
-        type = key
-        key  = "VOTRE_CLE_API_MISP"
-      }
-      tags             = ["misp", "threat-intel"]
-      caseTemplate     = "misp"
-    }
-  ]
-}
-```
+📚 [Documentation MISP](https://www.misp-project.org/documentation/) ·
+[Guide de l'API REST](https://www.misp-project.org/openapi/)
+
+1. Ouvrir `https://VOTRE_IP` (accepter l'avertissement TLS)
+2. Se connecter avec `admin@admin.test` / `admin` → **changer le mot de passe**
+3. **Administration** → **Server Settings** → `MISP.baseurl` = votre URL
+4. **Administration** → **List Auth Keys** → **Add authentication key** → copier
+5. Dans `.env` : `MISP_ENABLED=true`, `MISP_URL`, `MISP_APIKEY`
+
+Connecter TheHive à MISP : **Organisation** → **Connectors** → **MISP** →
+**Add MISP server** (`https://misp.local` + clé API).
+La variante par fichier est fournie dans [`docker/thehive/application.conf`](docker/thehive/application.conf).
 
 ---
 
-## 🔍 Configuration Suricata IDS
+## 3️⃣ Suricata IDS
 
-Suricata est l'IDS réseau qui détecte les scans NMAP, les connexions Metasploit, et autres menaces réseau. Ses alertes sont envoyées à Splunk qui les transmet au pipeline.
-
-### Installation Suricata
+📚 [Documentation Suricata](https://docs.suricata.io/) ·
+[Écriture de règles](https://docs.suricata.io/en/latest/rules/intro.html) ·
+[Suricata + Splunk](https://docs.suricata.io/en/latest/output/eve/eve-json-output.html)
 
 ```bash
-# Ubuntu / Debian
 sudo add-apt-repository ppa:oisf/suricata-stable -y
-sudo apt update
-sudo apt install suricata -y
-
-# Vérifier la version
+sudo apt update && sudo apt install suricata -y
 suricata --version
 ```
 
-### Configuration de base
+### Interface d'écoute
 
 ```bash
-# Éditer la configuration principale
+ip a                                    # repérer l'interface
 sudo nano /etc/suricata/suricata.yaml
 ```
 
-Modifier la section `af-packet` avec votre interface réseau :
-
 ```yaml
 af-packet:
-  - interface: eth0   # Remplacer par votre interface (ip a pour voir)
+  - interface: eth0        # remplacer par votre interface
     cluster-id: 99
     cluster-type: cluster_flow
     defrag: yes
 ```
 
-### Règles de détection personnalisées
+### Règles personnalisées
 
-Créer un fichier de règles pour détecter les scans NMAP et Metasploit :
-
-```bash
-sudo nano /etc/suricata/rules/soc-custom.rules
-```
-
-Ajouter les règles suivantes :
-
-```
-# ══════════════════════════════════════════════════════════════════
-# SOC Pipeline — Règles de détection personnalisées
-# Détection des scans NMAP (T1 à T5) et activité Metasploit
-# ══════════════════════════════════════════════════════════════════
-
-# SYN SCAN -sS (vitesses T1-T5)
-alert tcp any any -> any [21,22,23,25,53,80,88,110,135,137,138,139,143,161,389,443,445,465,514,587,636,853,993,995,1194,1433,1720,3306,3389,8080,8443,11211,27017,51820] (msg:"POSSBL PORT SCAN (NMAP -sS)"; flow:to_server,stateless; flags:S; window:1024; tcp.mss:1460; threshold:type threshold, track by_src, count 20, seconds 70; classtype:attempted-recon; sid:3400001; priority:2; rev:1;)
-
-alert tcp any any -> any ![21,22,23,25,53,80,88,110,135,137,138,139,143,161,389,443,445,465,514,587,636,853,993,995,1194,1433,1720,3306,3389,8080,8443,11211,27017,51820] (msg:"POSSBL PORT SCAN (NMAP -sS)"; flow:to_server,stateless; flags:S; window:1024; tcp.mss:1460; threshold:type threshold, track by_src, count 7, seconds 135; classtype:attempted-recon; sid:3400002; priority:2; rev:2;)
-
-# SYN-ACK 3-WAY SCAN -sT (vitesses T2-T5)
-alert tcp any ![22,25,53,80,88,143,443,445,465,587,853,993,1194,8080,51820] -> any ![22,25,53,80,88,143,443,445,465,587,853,993,1194,8080,51820] (msg:"POSSBL PORT SCAN (NMAP -sT)"; flow:to_server; window:32120; flags:S; threshold:type threshold, track by_src, count 20, seconds 70; classtype:attempted-recon; sid:3400003; rev:3;)
-
-# ACK SCAN -sA (vitesses T2-T5)
-alert tcp any ![22,25,53,80,88,143,443,445,465,587,853,993,1194,8080,51820] -> any ![22,25,53,80,88,143,443,445,465,587,853,993,1194,8080,51820] (msg:"POSSBL PORT SCAN (NMAP -sA)"; flags:A; flow:stateless; window:1024; threshold:type threshold, track by_dst, count 20, seconds 70; classtype:attempted-recon; sid:3400004; priority:2; rev:5;)
-
-# CHRISTMAS TREE SCAN -sX (vitesses T1-T5)
-alert tcp any any -> any any (msg:"POSSBL PORT SCAN (NMAP -sX)"; flags:FPU; flow:to_server,stateless; threshold:type threshold, track by_src, count 3, seconds 120; classtype:attempted-recon; sid:3400005; rev:2;)
-
-# FRAGMENTED SCAN -f (vitesses T1-T5)
-alert ip any any -> any any (msg:"POSSBL SCAN FRAG (NMAP -f)"; fragbits:M+D; threshold:type limit, track by_src, count 3, seconds 1210; classtype:attempted-recon; sid:3400006; priority:2; rev:6;)
-
-# UDP SCAN -sU (vitesses T1-T5)
-alert udp any any -> any [53,67,68,69,123,161,162,389,520,1026,1027,1028,1029,1194,1434,1900,11211,12345,27017,51820] (msg:"POSSBL PORT SCAN (NMAP -sU)"; flow:to_server,stateless; classtype:attempted-recon; sid:3400007; priority:2; rev:6; threshold:type threshold, track by_src, count 20, seconds 70; dsize:0;)
-
-alert udp any any -> any ![53,67,68,69,123,161,162,389,520,1026,1027,1028,1029,1194,1434,1900,11211,12345,27017,51820] (msg:"POSSBL PORT SCAN (NMAP -sU)"; flow:to_server,stateless; classtype:attempted-recon; sid:3400008; priority:2; rev:6; threshold:type threshold, track by_src, count 7, seconds 135; dsize:0;)
-
-# METASPLOIT — Port 4444 (shell reverse TCP par défaut)
-alert tcp any ![21,22,23,25,53,80,88,110,135,137,138,139,143,161,389,443,445,465,514,587,636,853,993,995,1194,1433,1720,3306,3389,8080,8443,11211,27017,51820] -> any 4444 (msg:"POSSBL SHELL METASPLOIT TCP:4444"; classtype:trojan-activity; sid:3400020; priority:1; rev:2;)
-
-alert udp any ![53,67,68,69,123,161,162,389,520,1026,1027,1028,1029,1194,1434,1900,11211,12345,27017,51820] -> any 4444 (msg:"POSSBL SHELL METASPLOIT UDP:4444"; classtype:trojan-activity; sid:3400021; priority:1; rev:2;)
-```
-
-### Activer les règles personnalisées
+Le fichier [`suricata/soc-custom.rules`](suricata/soc-custom.rules) détecte les
+scans NMAP `-sS`, `-sT`, `-sA`, `-sX`, `-sU`, `-f` (vitesses T1 à T5) et les
+shells Metasploit sur le port 4444.
 
 ```bash
-# Éditer suricata.yaml pour inclure nos règles
+sudo cp suricata/soc-custom.rules /etc/suricata/rules/
 sudo nano /etc/suricata/suricata.yaml
 ```
-
-Trouver la section `rule-files` et ajouter :
 
 ```yaml
 rule-files:
   - suricata.rules
-  - soc-custom.rules    # Ajouter cette ligne
+  - soc-custom.rules       # ajouter cette ligne
 ```
-
-### Démarrer Suricata
 
 ```bash
-# Tester la configuration
-sudo suricata -T -c /etc/suricata/suricata.yaml
-
-# Démarrer le service
-sudo systemctl enable suricata
-sudo systemctl start suricata
-sudo systemctl status suricata
-
-# Voir les alertes en temps réel
-sudo tail -f /var/log/suricata/fast.log
+sudo suricata -T -c /etc/suricata/suricata.yaml    # test de configuration
+sudo systemctl enable --now suricata
+sudo tail -f /var/log/suricata/fast.log            # alertes en direct
 ```
+
+### Vérifier la détection
+
+```bash
+# Depuis une autre machine du lab, contre le capteur Suricata
+nmap -sS -T4 IP_DU_CAPTEUR
+# → « POSSBL PORT SCAN (NMAP -sS) » doit apparaître dans fast.log
+```
+
+Ces alertes remontent à Splunk, puis au pipeline, qui **bloque l'IP scanneuse**
+lorsque `ACTIVE_RESPONSE=true` et `BLOCK_ON_PORTSCAN=true`.
 
 ---
 
-## 📦 Installation du Pipeline SOC
+## 4️⃣ Splunk
 
-### 1. Préparer l'environnement Python
+📚 [Installer Splunk Enterprise](https://docs.splunk.com/Documentation/Splunk/latest/Installation/InstallonLinux) ·
+[Alert actions – Webhook](https://docs.splunk.com/Documentation/Splunk/latest/Alert/Webhooks) ·
+[Universal Forwarder](https://docs.splunk.com/Documentation/Forwarder/latest/Forwarder/Abouttheuniversalforwarder)
 
-```bash
-# Aller dans le dossier du projet
-cd SOAR
+### Ingérer les logs Suricata
 
-# Créer un environnement virtuel
-python3 -m venv venv
-
-# Activer l'environnement
-source venv/bin/activate          # Linux / macOS
-# OU
-.\venv\Scripts\Activate.ps1       # Windows PowerShell
-
-# Installer les dépendances
-pip install -r requirements.txt
-```
-
-### 2. Vérifier l'installation
-
-```bash
-python start.py install
-python start.py status
-```
-
----
-
-## 🔧 Fichier de Configuration .env
-
-### Créer le fichier
-
-```bash
-cp env.example .env
-nano .env
-```
-
-### Référence complète de toutes les variables
+`inputs.conf` du Universal Forwarder installé sur le capteur :
 
 ```ini
-# ══════════════════════════════════════════════════════════════════
-#  SOC Automation Pipeline — Configuration
-# ══════════════════════════════════════════════════════════════════
-#
-#  ⚠️  RÈGLE IMPORTANTE : jamais de commentaire après une valeur !
-#  ❌  BLOCK_DURATION_MIN=10   ← commentaire    (provoque une erreur)
-#  ✅  BLOCK_DURATION_MIN=10
-#      # commentaire sur une ligne séparée
-#
-# ══════════════════════════════════════════════════════════════════
-
-# ─── TheHive ──────────────────────────────────────────────────────
-THEHIVE_URL=http://VOTRE_IP:9000
-THEHIVE_APIKEY=votre_cle_api_thehive
-
-# ─── Cortex ───────────────────────────────────────────────────────
-CORTEX_URL=http://VOTRE_IP:9001
-CORTEX_APIKEY=votre_cle_api_cortex
-
-# ─── MISP ─────────────────────────────────────────────────────────
-MISP_URL=https://VOTRE_IP_MISP
-MISP_APIKEY=votre_cle_api_misp
-MISP_ENABLED=true
-
-# ─── VirusTotal ───────────────────────────────────────────────────
-VT_ENABLED=true
-VT_APIKEY=votre_cle_api_virustotal
-VT_TIMEOUT=15
-VT_MIN_DETECTIONS=2
-
-# ─── Service A — Webhook ──────────────────────────────────────────
-LISTEN_HOST=0.0.0.0
-LISTEN_PORT=5000
-RATE_LIMIT_SEC=10
-RETRY_ATTEMPTS=3
-RETRY_DELAY_SEC=5
-
-# ─── Service B — Responder ────────────────────────────────────────
-POLL_INTERVAL=20
-MIN_SEVERITY=1
-RESPONSE_MIN_SEV=2
-STATE_FILE=responder_state.json
-BLACKLIST_FILE=ip_blacklist.txt
-CORTEX_JOB_TIMEOUT=180
-
-# ─── Réponse Active — Blocage Firewall ────────────────────────────
-# false = simulation (aucun blocage réel)
-# true  = blocage firewall réel (nécessite admin/root)
-ACTIVE_RESPONSE=false
-BLOCK_DURATION_MIN=10
-BLOCK_ALL_IPS=true
-BLOCK_ON_BRUTEFORCE=true
-
-# ─── Telegram ─────────────────────────────────────────────────────
-TELEGRAM_ENABLED=true
-TELEGRAM_TOKEN=votre_token_bot_telegram
-TELEGRAM_CHAT_ID=votre_chat_id
-
-# ─── Gmail (optionnel) ────────────────────────────────────────────
-GMAIL_ENABLED=false
-GMAIL_USER=
-GMAIL_PASS=
-GMAIL_TO=
-
-# ─── Logs ─────────────────────────────────────────────────────────
-LOG_FILE=service_a.log
-LOG_FILE_B=service_b.log
-LOG_LEVEL=INFO
-NOTIFY_MIN_SEV=1
+[monitor:///var/log/suricata/eve.json]
+disabled   = false
+index      = suricata
+sourcetype = suricata
 ```
 
-### Tableau de référence des variables
+### Créer le webhook
 
-| Variable | Valeur par défaut | Description |
-|----------|-------------------|-------------|
-| `THEHIVE_URL` | — | URL TheHive (ex: `http://192.168.1.10:9000`) |
-| `THEHIVE_APIKEY` | — | Clé API TheHive |
-| `CORTEX_URL` | — | URL Cortex (ex: `http://192.168.1.10:9001`) |
-| `CORTEX_APIKEY` | — | Clé API Cortex |
-| `MISP_URL` | — | URL MISP (ex: `https://192.168.1.11`) |
-| `MISP_APIKEY` | — | Clé API MISP |
-| `MISP_ENABLED` | `true` | Activer MISP |
-| `VT_ENABLED` | `true` | Activer VirusTotal |
-| `VT_APIKEY` | — | Clé API VirusTotal |
-| `VT_TIMEOUT` | `15` | Timeout requêtes VT (secondes) |
-| `VT_MIN_DETECTIONS` | `2` | Seuil détections pour verdict malveillant |
-| `LISTEN_PORT` | `5000` | Port webhook Service A |
-| `RATE_LIMIT_SEC` | `10` | Anti-doublon entre alertes identiques |
-| `POLL_INTERVAL` | `20` | Fréquence poll TheHive (secondes) |
-| `ACTIVE_RESPONSE` | `false` | `true` = blocage firewall réel |
-| `BLOCK_DURATION_MIN` | `10` | Durée de blocage (minutes) |
-| `BLOCK_ON_BRUTEFORCE` | `true` | Bloquer automatiquement si brute force |
-| `CORTEX_JOB_TIMEOUT` | `180` | Attente max résultats Cortex (secondes) |
-| `TELEGRAM_ENABLED` | `false` | Activer notifications Telegram |
-| `TELEGRAM_TOKEN` | — | Token bot Telegram |
-| `TELEGRAM_CHAT_ID` | — | Chat ID Telegram |
-| `LOG_LEVEL` | `INFO` | Niveau log (`DEBUG`, `INFO`, `WARNING`) |
+1. **Settings** → **Searches, Reports and Alerts** → créer/éditer une alerte
+2. **Alert Actions** → **Add Actions** → **Webhook**
+3. **URL** : `http://IP_DU_PIPELINE:5000/alert`
 
----
+> Splunk n'envoie que du POST JSON : rien d'autre à configurer.
 
-## 📡 Configuration Splunk
+### Formats de payload acceptés
 
-### Créer un webhook dans Splunk
+Le parseur accepte **4 formats**, plus un repli.
 
-1. **Settings** → **Searches, Reports and Alerts**
-2. Créer ou éditer une alerte
-3. **Alert Actions** → **Add Actions** → **Webhook**
-4. Configurer :
-
-```
-URL     : http://VOTRE_IP_PIPELINE:5000/alert
-Method  : POST
-```
-
-### Format du payload Splunk (4 formats supportés)
-
-**Format 1 — Standard avec `result` :**
+**Format 1 — standard avec `result`**
 ```json
 {
-  "search_name": "Brute Force SSH Détecté",
+  "search_name": "Brute Force SSH détecté",
   "severity": "high",
   "result": {
-    "src_ip":       "1.2.3.4",
-    "dest_ip":      "192.168.1.10",
-    "user":         "root",
-    "host":         "serveur-prod",
-    "count":        "15",
-    "source":       "/var/log/auth.log",
-    "_time":        "2024-01-15T10:30:00"
+    "src_ip":  "1.2.3.4",
+    "dest_ip": "192.168.1.10",
+    "user":    "root",
+    "host":    "serveur-prod",
+    "count":   "15",
+    "source":  "/var/log/auth.log",
+    "_time":   "2026-01-15T10:30:00"
   }
 }
 ```
 
-**Format 2 — Avec hash de fichier :**
+**Format 2 — hash de fichier malveillant**
 ```json
 {
-  "search_name": "Fichier Malveillant Détecté",
+  "search_name": "Fichier malveillant détecté",
   "severity": "critical",
   "result": {
     "host":      "poste-01",
@@ -654,482 +513,595 @@ Method  : POST
 }
 ```
 
-**Format 3 — Avec domaine :**
+**Format 3 — domaine C2**
 ```json
 {
-  "search_name": "DNS Suspect",
+  "search_name": "DNS suspect",
   "severity": "medium",
-  "result": {
-    "src_ip":  "192.168.1.50",
-    "domain":  "malware-c2.xyz",
-    "host":    "workstation-05"
-  }
+  "result": { "src_ip": "192.168.1.50", "domain": "malware-c2.xyz", "host": "poste-05" }
 }
 ```
 
-### Alertes Suricata → Splunk
+**Format 4** — `result` contenant une chaîne JSON, et **repli** — payload plat
+(`{"search_name": "...", "src_ip": "...", "host": "..."}`).
 
-Configurer Splunk pour ingérer les logs Suricata :
+Champs reconnus : `src_ip`, `src`, `dest_ip`, `dest`, `user`, `host`, `source`,
+`index`, `process_name`, `Image`, `file_hash`, `hash`, `md5`, `sha1`, `sha256`,
+`domain`, `dest_domain`, `query`, `url`, `uri`, `CommandLine`, `EventCode`, `_time`.
+
+---
+
+## 5️⃣ Installation du pipeline Python
 
 ```bash
-# Dans Splunk Universal Forwarder sur le serveur Suricata
-# Éditer inputs.conf
-[monitor:///var/log/suricata/eve.json]
-disabled = false
-index = suricata
-sourcetype = suricata
+cd SOAR
+
+# Environnement virtuel (recommandé)
+python3 -m venv venv
+source venv/bin/activate            # Linux / macOS
+.\venv\Scripts\Activate.ps1         # Windows PowerShell
+
+python start.py install
+python start.py unit                # 135 tests unitaires, hors ligne
+python start.py status
 ```
+
+Trois dépendances seulement : `flask`, `requests`, `urllib3`.
+**`thehive4py` n'est plus utilisé** — voir les commentaires de
+[`requirements.txt`](requirements.txt).
+
+---
+
+## 6️⃣ Fichier .env
+
+```bash
+python start.py init      # copie .env.example → .env
+nano .env
+```
+
+Le modèle complet et commenté est dans [`.env.example`](.env.example).
+Variables essentielles :
+
+| Variable | Défaut | Description |
+|----------|--------|-------------|
+| `THEHIVE_URL` | — | URL de TheHive, ex. `http://192.168.1.10:9000` |
+| `THEHIVE_APIKEY` | — | Clé API d'un utilisateur `analyst` |
+| `CORTEX_ENABLED` | `true` | Lancer les analyseurs Cortex automatiquement |
+| `CORTEX_URL` / `CORTEX_APIKEY` | — | Secours si TheHive ne liste pas les analyseurs |
+| `CORTEX_JOB_TIMEOUT` | `180` | Attente max d'un analyseur (s) |
+| `CORTEX_MAX_ANALYZERS` | `5` | Analyseurs lancés par observable |
+| `MISP_ENABLED` / `MISP_URL` / `MISP_APIKEY` | `false` | Threat Intelligence |
+| `MISP_VERIFY_SSL` | `false` | Certificat auto-signé en lab |
+| `VT_ENABLED` / `VT_APIKEY` | `true` | Enrichissement VirusTotal |
+| `VT_MIN_DETECTIONS` | `2` | Seuil de verdict « malveillant » |
+| `LISTEN_PORT` | `5000` | Port du webhook |
+| `RATE_LIMIT_SEC` | `10` | Anti-flood sur alertes identiques |
+| `POLL_INTERVAL` | `20` | Fréquence d'interrogation de TheHive (s) |
+| `MIN_SEVERITY` | `1` | Sévérité minimale traitée |
+| `RESPONSE_MIN_SEV` | `2` | Sévérité minimale pour bloquer |
+| `ACTIVE_RESPONSE` | `false` | `true` = blocage firewall réel |
+| `BLOCK_DURATION_MIN` | `10` | Durée d'un blocage (min) |
+| `BLOCK_ON_BRUTEFORCE` | `true` | Bloquer les attaques par force brute |
+| `BLOCK_ON_PORTSCAN` | `true` | Bloquer les scans de ports |
+| `BLOCK_ON_THREAT` | `true` | Bloquer les autres catégories de menace |
+| `BLOCK_ALL_IPS` | `false` | Bloquer aussi les IP internes |
+| `TELEGRAM_*` | `false` | Notifications |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR` |
+
+> 💡 Les commentaires en fin de ligne (`BLOCK_DURATION_MIN=10  # minutes`) sont
+> désormais tolérés : l'erreur historique `invalid literal for int()` ne peut
+> plus se produire.
 
 ---
 
 ## 🚀 Démarrage
 
-### Lancer les deux services
-
 ```bash
-# Les deux services ensemble
-python start.py both
-
-# Ou séparément
-python start.py a    # Service A (webhook)
-python start.py b    # Service B (responder)
+python start.py both        # Services A + B, redémarrage auto si crash
+python start.py a           # Service A seul (webhook)
+python start.py b           # Service B seul (responder)
 ```
 
-### Activer le vrai blocage firewall
+### Activer le blocage réel
 
 ```bash
-# Dans .env : ACTIVE_RESPONSE=true
+# dans .env : ACTIVE_RESPONSE=true
 
-# Linux — nécessite root :
+# Linux — root requis pour iptables
 sudo python3 start.py both
 
-# Windows — relancer PowerShell en Administrateur :
-# Clic droit sur PowerShell → "Exécuter en tant qu'administrateur"
+# Windows — PowerShell en tant qu'administrateur
 python start.py both
 ```
 
-### Sortie attendue au démarrage
+Si `ACTIVE_RESPONSE=true` sans les privilèges, le Service B le signale au
+démarrage et `python start.py status` affiche `Privilèges : utilisateur standard`.
+
+### Sortie attendue
 
 ```
-══  Service A + B — Lancement simultané  ═══════════════
-  Lancement de Service A (webhook :5000)...
-  Lancement de Service B (responder Cortex+MISP)...
-  ✓ Service A PID 12345
-  ✓ Service B PID 12346
-  Les deux services tournent. Ctrl+C pour arrêter.
-
-[TELEGRAM] ✅ Bot @votre_bot
+══  Services A + B — lancement simultané  ══════════
+  Lancement de Service A (webhook)...
+  Lancement de Service B (responder)...
+  ✓ Service A — PID 12345
+  ✓ Service B — PID 12346
 
 ==============================================================
-  SOC Pipeline — Service A  v7.0.0
+  SOC Pipeline — Service A  v8.0.0
 ==============================================================
-  TheHive     : ✅ OK — http://192.168.1.10:9000
-  VirusTotal  : ✅ OK
-  Telegram    : ✅ OK
-  Gmail       : ⚪ Désactivé
-  Webhook     : http://0.0.0.0:5000/alert
+  TheHive      : ✅ OK — http://192.168.1.10:9000
+  VirusTotal   : ✅ OK
+  Telegram     : ✅ OK
+  Gmail        : ⚪ Désactivé
+  Webhook      : http://0.0.0.0:5000/alert
 ==============================================================
 
-╔══════════════════════════════════════════════════════════╗
-║  SOC Pipeline — Service B  v10.0.0  FULL AUTO           ║
-╠══════════════════════════════════════════════════════════╣
-║  TheHive  : http://192.168.1.10:9000                    ║
-║  VT       : ✅ Actif                                    ║
-║  Cortex   : ✅ 8 analyseurs                             ║
-║  MISP     : ✅ Actif                                    ║
-║  Blocage  : ⚠️  SIMULATION                              ║
-╚══════════════════════════════════════════════════════════╝
+==================================================================
+  SOC Pipeline — Service B  v11.0.0  FULL AUTO
+==================================================================
+  TheHive     : http://192.168.1.10:9000
+  VirusTotal  : ✅ actif
+  Cortex      : ✅ 8 analyseur(s) via TheHive
+  MISP        : ✅ actif
+  Blocage     : 🔴 RÉEL (Administrateur)
+  Cadence     : 10 min de blocage — poll 20s
+==================================================================
 ```
 
 ---
 
-## 🔄 Flux Automatique Complet
-
-Voici exactement ce qui se passe pour chaque alerte reçue :
+## 🔄 Flux automatique détaillé
 
 ```
-1️⃣  Splunk/Suricata détecte une menace
-     → Webhook POST /alert envoyé au Service A
-          │
-          ▼
-2️⃣  Service A reçoit et parse l'alerte
-     → Extraction des IoCs (IP, hash, domaine, URL)
-     → Enrichissement VirusTotal (IPs publiques + hashes)
-     → Création Alerte TheHive avec observables
-     → 📱 Telegram : "🔴 ALERTE SOC — HIGH"
-          │
-          ▼
-3️⃣  Service B détecte l'alerte (poll toutes les 20s)
-     → Vérification : alerte déjà traitée ?
-          │
-          ▼
-4️⃣  Promotion Alerte → Cas TheHive
-     → 3 méthodes de fallback garanties
-     → 📱 Telegram : "📁 Cas #42 créé"
-          │
-          ▼
-5️⃣  Pour chaque Observable (IP / Hash / Domaine) :
-     │
-     ├── a) Ajout Observable au Cas TheHive
-     │       → Visible dans l'onglet Observables
-     │
-     ├── b) VirusTotal
-     │       → IPs publiques : check réputation
-     │       → Hashes : détection malware
-     │       → Commentaire ajouté dans le cas
-     │       → 📱 Telegram : "🔴 MALVEILLANT 45/72"
-     │
-     ├── c) MISP Lookup
-     │       → Vérification dans la base IoC
-     │       → Si trouvé : tag + commentaire dans le cas
-     │       → 📱 Telegram : "🌐 MISP HIT"
-     │
-     ├── d) Blocage IP Firewall
-     │       → Si brute force OU VT malveillant OU MISP hit
-     │       → Windows : netsh advfirewall
-     │       → Linux : iptables -I INPUT DROP
-     │       → Timer de déblocage automatique
-     │       → Commentaire dans le cas TheHive
-     │       → 📱 Telegram : "🚫 IP BLOQUÉE 10min"
-     │
-     └── e) Cortex (via API TheHive)
-             → Lancement analyseurs prioritaires
-             → AbuseIPDB, MaxMind, VT, Shodan...
-             → Résultats dans l'onglet Analyzers du cas
-             → Commentaire avec verdicts
-             → 📱 Telegram par analyseur
-          │
-          ▼
-6️⃣  Rapport récapitulatif dans le cas TheHive
-     → Tableau IPs / VT / MISP / Blocage
-     → Liste des actions Cortex
-     → Commandes de déblocage
-          │
-          ▼
-7️⃣  ⏱️  Après X minutes : déblocage automatique
-     → Suppression règle firewall
-     → 📱 Telegram : "✅ IP débloquée"
+1️⃣  Suricata ou Splunk détecte une menace
+      → POST /alert vers le Service A
+           │
+2️⃣  Service A
+      → parse le payload (4 formats)
+      → extrait les IoCs : IP, hash, domaine, URL, utilisateur, cmdline
+      → interroge VirusTotal (IP publiques, hashes, domaines, URL)
+      → si VT est formel, la sévérité est remontée à High
+      → crée l'ALERTE TheHive avec ses observables
+      → 📱 Telegram : « 🔴 ALERTE SOC — HIGH »
+           │
+3️⃣  Service B — poll toutes les 20 s
+      → ignore les alertes déjà traitées (data/responder_state.json)
+      → filtre sur MIN_SEVERITY
+           │
+4️⃣  Promotion ALERTE → CAS
+      → POST /api/v1/alert/{id}/case, avec repli création + merge
+      → 📱 Telegram : « 📁 Cas #42 créé »
+           │
+5️⃣  Pour CHAQUE observable (IP / hash / domaine) :
+      │
+      ├── a) Ajout de l'observable au cas TheHive
+      │
+      ├── b) 🔬 CORTEX — lancé en premier, en tâche de fond
+      │        → analyseurs triés par priorité selon le type
+      │          ip     : AbuseIPDB → VirusTotal → MaxMind → Shodan → OTX
+      │          hash   : VirusTotal → Cuckoo → OTX
+      │          domain : VirusTotal → DomainTools → OTX
+      │        → un job Cortex par analyseur, résultats attendus en parallèle
+      │        → verdicts écrits en commentaire dans le cas
+      │        → tag « cortex-malicious » si un analyseur est formel
+      │        → 📱 Telegram par analyseur
+      │
+      ├── c) 🦠 VIRUSTOTAL
+      │        → IP publiques, hashes de fichiers, domaines
+      │        → commentaire markdown + tag « vt-malicious »
+      │
+      ├── d) 🌐 MISP
+      │        → lookup de l'IoC dans la base
+      │        → si absent mais malveillant : publication automatique
+      │
+      └── e) 🚫 BLOCAGE FIREWALL
+               → voir le tableau des déclencheurs ci-dessous
+               → Windows : netsh advfirewall (règles IN + OUT)
+               → Linux   : iptables -I INPUT/OUTPUT ... -j DROP
+               → timer de déblocage automatique programmé
+           │
+6️⃣  Rapport markdown complet dans le cas
+      → tableau IP / VT / MISP / blocage, hashes, domaines
+      → journal de toutes les actions
+      → sévérité du cas remontée et tag « confirmed-malicious »
+           │
+7️⃣  ⏱ Après BLOCK_DURATION_MIN
+      → règle firewall supprimée automatiquement
+      → 📱 Telegram : « ✅ IP débloquée »
 ```
 
 ---
 
-## 🌐 Endpoints Service A
+## 🚫 Réponse active : quoi est bloqué et quand
+
+Le Service B classe chaque alerte en **catégories de menace**, à partir des tags
+posés par le Service A et d'une recherche par mots-clés dans le titre et la
+description.
+
+| Catégorie | Déclencheurs typiques | Bloque si |
+|-----------|----------------------|-----------|
+| `brute_force` | tag `brute_force`, « failed password », « invalid user », EventCode 4625 | `BLOCK_ON_BRUTEFORCE=true` |
+| `port_scan` | « POSSBL PORT SCAN (NMAP -sS) », nmap, masscan, zmap, attempted-recon | `BLOCK_ON_PORTSCAN=true` |
+| `exploitation` | Metasploit, meterpreter, reverse shell, port 4444, `CVE-…` | `BLOCK_ON_THREAT=true` |
+| `lateral_movement` | psexec, wmic, winrm, pass-the-hash, SMB, RDP | `BLOCK_ON_THREAT=true` |
+| `credential_dumping` | mimikatz, lsass, secretsdump, ntds.dit | `BLOCK_ON_THREAT=true` |
+| `ransomware` | ransom, `vssadmin delete`, `wbadmin delete` | `BLOCK_ON_THREAT=true` |
+| `malware` | tag `vt-malicious`, C2, botnet, trojan | `BLOCK_ON_THREAT=true` |
+| `exfiltration` | exfil, DLP, large upload | `BLOCK_ON_THREAT=true` |
+| `privilege_escalation` | EventCode 4672, escalade de privilèges | `BLOCK_ON_THREAT=true` |
+| **VirusTotal** | ≥ `VT_MIN_DETECTIONS` moteurs positifs, ou réputation ≤ -10 | toujours |
+| **MISP** | l'IoC existe déjà dans MISP | toujours |
+
+### Garde-fous
+
+Une IP n'est bloquée que si **toutes** ces conditions sont réunies :
+
+1. `ACTIVE_RESPONSE=true` — sinon simulation journalisée ;
+2. le processus a les droits **Administrateur** (Windows) ou **root** (Linux) ;
+3. la sévérité du cas est ≥ `RESPONSE_MIN_SEV` (défaut 2 = Medium) ;
+4. l'IP est publique, ou `BLOCK_ALL_IPS=true` pour inclure les IP internes ;
+5. l'IP n'est pas déjà bloquée.
+
+> ⚠️ `BLOCK_ALL_IPS=true` peut couper un poste interne du réseau. À réserver
+> aux labs.
+
+### Ce qui n'est PAS fait automatiquement
+
+Le pipeline **ne supprime aucun fichier** sur les machines surveillées : il n'y
+a pas d'agent EDR déployé. Un hash malveillant est enrichi, tagué
+`vt-malicious`, commenté dans le cas, publié dans MISP et notifié — la mise en
+quarantaine reste une action de l'analyste (ou d'un responder Cortex à ajouter).
+
+### Vérifier les règles posées
+
+```bash
+# Linux
+sudo iptables -L INPUT -n --line-numbers | grep DROP
+
+# Windows
+netsh advfirewall firewall show rule name=all | findstr SOC_BLOCK
+```
+
+```bash
+python start.py list                # IPs bloquées + temps restant
+python start.py unblock 1.2.3.4     # déblocage manuel immédiat
+```
+
+---
+
+## 🌐 Endpoints du Service A
 
 | Méthode | Endpoint | Description |
 |---------|----------|-------------|
-| `POST` | `/alert` | **Webhook principal** — reçoit les alertes Splunk |
-| `GET` | `/health` | Vérification état complet du service |
-| `GET` | `/test` | Envoie une alerte de test avec IP Tor (VT la détecte) |
-| `GET` | `/telegram-test` | Teste le bot Telegram avec diagnostic |
-| `GET` | `/vt-test` | Teste la connexion VirusTotal |
-| `GET` | `/debug` | Affiche les 10 derniers payloads reçus |
-| `GET` | `/stats` | Statistiques (reçus, créés, doublons, erreurs) |
-
-### Tests rapides
+| `POST` | `/alert` | **Webhook principal** — alertes Splunk |
+| `GET` | `/health` | État du service + connexion TheHive |
+| `GET` | `/test` | Envoie une vraie alerte de test (IP Tor connue de VT) |
+| `GET` | `/telegram-test` | Teste le bot Telegram |
+| `GET` | `/vt-test` | Teste la clé VirusTotal |
+| `GET` | `/debug` | 10 derniers payloads reçus |
+| `GET` | `/stats` | Compteurs : reçus, créés, doublons, erreurs |
 
 ```bash
-# Health check
 curl http://localhost:5000/health
-
-# Alerte de test (envoie une vraie alerte à TheHive)
 curl http://localhost:5000/test
-
-# Test Telegram
-curl http://localhost:5000/telegram-test
-
-# Test VirusTotal
 curl http://localhost:5000/vt-test
 
-# Webhook manuel
 curl -X POST http://localhost:5000/alert \
   -H "Content-Type: application/json" \
   -d '{
     "search_name": "Test Brute Force SSH",
     "severity": "high",
     "result": {
-      "src_ip":  "185.220.101.50",
-      "user":    "root",
-      "host":    "serveur-01",
-      "count":   "50",
-      "source":  "/var/log/auth.log"
+      "src_ip": "185.220.101.50",
+      "user":   "root",
+      "host":   "serveur-01",
+      "count":  "50",
+      "source": "/var/log/auth.log"
     }
   }'
 ```
+
+Codes de réponse de `/alert` : `201 created`, `200 duplicate`,
+`200 rate_limited`, `400` payload invalide, `502` TheHive injoignable.
 
 ---
 
 ## 🖥️ Commandes CLI
 
 ```bash
-# État complet du système
-python start.py status
-
-# Voir toutes les IPs actuellement bloquées
-python start.py list
-
-# Débloquer une IP manuellement
-python start.py unblock 1.2.3.4
-
-# Lancer uniquement Service A
-python start.py a
-
-# Lancer uniquement Service B
-python start.py b
-
-# Lancer les deux services
-python start.py both
-
-# Installer les dépendances
-python start.py install
-
-# Tester toute l'intégration
-python start.py test
-
-# Tester Telegram
-python start.py telegram
+python start.py                  # menu interactif
+python start.py install          # installer les dépendances
+python start.py init             # créer .env depuis .env.example
+python start.py a                # Service A seul
+python start.py b                # Service B seul
+python start.py both             # A + B avec redémarrage automatique
+python start.py status           # état complet de l'intégration
+python start.py test             # tests end-to-end (services lancés)
+python start.py unit             # 135 tests unitaires (hors ligne)
+python start.py telegram         # message de test Telegram
+python start.py telegram-config  # configuration Telegram guidée
+python start.py list             # IPs actuellement bloquées
+python start.py unblock 1.2.3.4  # débloquer une IP
+python start.py cortex           # analyseurs Cortex détectés
+python start.py logs             # fin des journaux
 ```
 
 ---
 
 ## 📱 Notifications Telegram
 
-### Configurer le bot
-
-1. Ouvrir Telegram → chercher **@BotFather**
-2. Envoyer `/newbot`
-3. Donner un nom → récupérer le **token**
-4. **Envoyer un message** à votre bot (pour activer le chat)
-5. Récupérer votre **Chat ID** :
+📚 [Documentation de l'API Bot](https://core.telegram.org/bots/api) ·
+[Créer un bot](https://core.telegram.org/bots/features#botfather)
 
 ```bash
-curl "https://api.telegram.org/botVOTRE_TOKEN/getUpdates"
-# Chercher : result[0].message.chat.id
+python start.py telegram-config    # assistant : token, chat ID, message de test
 ```
 
-6. Mettre à jour `.env` :
-```ini
-TELEGRAM_ENABLED=true
-TELEGRAM_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TELEGRAM_CHAT_ID=123456789
-```
+Manuellement :
 
-### Types de notifications
+1. Telegram → **@BotFather** → `/newbot` → récupérer le **token**
+2. Envoyer `/start` à votre bot
+3. Ouvrir `https://api.telegram.org/botVOTRE_TOKEN/getUpdates` → relever
+   `result[0].message.chat.id`
+4. Dans `.env` :
+   ```ini
+   TELEGRAM_ENABLED=true
+   TELEGRAM_TOKEN=1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   TELEGRAM_CHAT_ID=123456789
+   ```
 
-| Emoji | Événement | Déclencheur |
-|-------|-----------|-------------|
-| 🚀 | Service démarré | Au lancement |
-| 🔴 | Alerte High/Critical | Réception webhook Splunk |
-| 📁 | Cas créé dans TheHive | Promotion alerte |
-| 🦠 | Résultat VirusTotal | Analyse IoC |
-| 🌐 | MISP Hit | IoC trouvé dans MISP |
-| 🚫 | IP Bloquée | Blocage firewall actif |
-| ⚠️ | IP en simulation | ACTIVE_RESPONSE=false |
-| 🔬 | Résultat Cortex | Analyseur terminé |
-| ✅ | IP Débloquée | Timer expiré ou manuel |
+| Emoji | Événement |
+|-------|-----------|
+| 🚀 | Service démarré |
+| 🔴 🟠 🟡 🟢 | Alerte reçue (selon la sévérité) |
+| 📁 | Cas créé dans TheHive |
+| 🦠 | Résultat VirusTotal |
+| 🔬 | Résultat d'un analyseur Cortex |
+| 🌐 | IoC trouvé dans MISP |
+| 🚫 | IP bloquée |
+| ⚠️ | Blocage simulé (`ACTIVE_RESPONSE=false`) |
+| ❌ | Blocage impossible ou cas non créé |
+| ✅ | IP débloquée |
 
 ---
 
-## 📁 Structure du Projet
+## 🧪 Tests
+
+```bash
+python start.py unit             # les 3 suites
+python tests/test_soc_common.py  # 33 tests — env, client TheHive, Telegram
+python tests/test_service_a.py   # 54 tests — parsing, VT, endpoints Flask
+python tests/test_service_b.py   # 48 tests — menaces, blocage, Cortex, état
+```
+
+Les tests sont **entièrement hors ligne** : aucune requête réseau, aucune règle
+firewall posée, aucun `.env` lu (`SOC_SKIP_DOTENV=1`), fichiers temporaires
+confinés dans `tests/.tmp/`.
 
 ```
-soc-automation-pipeline/
-│
-├── 📄 docker-compose.yml             # Infrastructure complète (TheHive, Cortex, MISP...)
-│
-├── 🐍 start.py                       # Lanceur universel (Windows/Linux/macOS)
-├── 🐍 service_splunk_to_thehive.py   # Service A — Webhook Flask v7.0.0
-├── 🐍 service_thehive_responder.py   # Service B — Responder Full Auto v10.0.0
-├── 🐍 test_service_a.py              # Tests d'intégration
-│
-├── 📄 .env                           # Configuration (à créer depuis env.example)
-├── 📄 env.example                    # Template de configuration
-├── 📄 requirements.txt               # Dépendances Python
-├── 📄 .gitignore                     # Fichiers exclus de Git
-│
-├── 📁 cortex/
-│   ├── application.conf              # Configuration Cortex
-│   └── logs/                         # Logs Cortex
-│
-├── 📁 server-configs/                # Configuration MISP
-├── 📁 logs/                          # Logs MISP
-├── 📁 files/                         # Fichiers MISP
-├── 📁 ssl/                           # Certificats SSL
-│
-├── 📄 responder_state.json           # État des alertes traitées (auto-généré)
-├── 📄 ip_blacklist.json              # Blacklist avec timers (auto-généré)
-├── 📄 ip_blacklist.txt               # Blacklist lisible (auto-généré)
-│
-├── 📄 service_a.log                  # Logs Service A (auto-généré)
-└── 📄 service_b.log                  # Logs Service B (auto-généré)
+  RÉSULTAT GLOBAL : toutes les suites sont vertes
+```
+
+Tests end-to-end, avec les services lancés :
+
+```bash
+python start.py both      # dans un terminal
+python start.py test      # dans un autre
 ```
 
 ---
 
 ## 🐛 Dépannage
 
-### Service B ne crée pas de cas
+### `ModuleNotFoundError: No module named 'flask'`
 
 ```bash
-# Vérifier les logs Service B
-tail -50 service_b.log        # Linux
-Get-Content service_b.log -Tail 50  # Windows PowerShell
+python start.py install
+```
 
-# Tester manuellement l'API TheHive
-curl -X POST http://VOTRE_IP:9000/api/v1/query?name=list-alerts \
+### Le Service A plante à l'import sous Windows
+
+Symptôme historique : l'interpréteur se ferme sans message, ou `magic` échoue.
+Cause : `thehive4py` importe `libmagic`, absent de Windows.
+**Cette version n'utilise plus thehive4py** — si l'erreur persiste, c'est qu'un
+ancien `service_splunk_to_thehive.py` traîne encore : supprimez-le.
+
+### Aucun analyseur Cortex ne se lance
+
+```bash
+python start.py cortex
+```
+
+- `0 analyseur` → le connecteur Cortex n'est pas configuré dans TheHive
+  (**Organisation → Connectors → Cortex → Test**) ;
+- analyseurs listés mais jobs en échec → vérifier les clés API des analyseurs
+  dans Cortex, et que le socket Docker est bien monté :
+  ```bash
+  docker compose logs cortex.local --tail 100
+  docker ps | grep cortexneurons
+  ```
+- Cortex démarré après le Service B : le registre se rafraîchit tout seul au
+  bout de 5 minutes, ou immédiatement avec `python start.py cortex`.
+
+### Cortex — `python3: No such file or directory`
+
+```bash
+sudo apt install python3 python3-pip -y
+sudo ln -sf /usr/bin/python3 /usr/local/bin/python3
+docker compose restart cortex.local
+```
+
+### Le Service B ne crée pas de cas
+
+```bash
+tail -50 logs/service_b.log                        # Linux
+Get-Content logs/service_b.log -Tail 50            # Windows
+
+# Tester l'API TheHive à la main
+curl -X POST "http://VOTRE_IP:9000/api/v1/query?name=list-alerts" \
   -H "Authorization: Bearer VOTRE_CLE" \
   -H "Content-Type: application/json" \
   -d '{"query":[{"_name":"listAlert"},{"_name":"page","from":0,"to":5}]}'
 ```
 
-### Cortex — `python3: No such file or directory`
+Une erreur `401` signifie une clé invalide ; une clé de super-admin ne voit
+aucun cas — utiliser un utilisateur `analyst` de l'organisation.
+
+### Le blocage d'IP ne fonctionne pas
 
 ```bash
-# Sur le serveur hébergeant Cortex
-sudo apt install python3 python3-pip -y
-sudo ln -sf /usr/bin/python3 /usr/local/bin/python3
-
-# Redémarrer Cortex
-docker compose restart cortex.local
+python start.py status      # doit afficher « Privilèges : ✓ admin/root »
 ```
 
-### Blocage IP ne fonctionne pas (Windows)
+| Cause | Correctif |
+|-------|-----------|
+| `ACTIVE_RESPONSE=false` | passer à `true` dans `.env` |
+| Pas administrateur (Windows) | PowerShell → « Exécuter en tant qu'administrateur » |
+| Pas root (Linux) | `sudo python3 start.py both` |
+| `iptables` absent | `sudo apt install iptables -y` |
+| Sévérité trop basse | abaisser `RESPONSE_MIN_SEV` |
+| IP interne ignorée | `BLOCK_ALL_IPS=true` (labs uniquement) |
 
-```
-Cause : PowerShell n'est pas lancé en Administrateur
-Fix   : Clic droit → "Exécuter en tant qu'administrateur"
-Vérif : ACTIVE_RESPONSE=true dans .env
-Test  : netsh advfirewall firewall show rule name=all | findstr SOC
-```
-
-### Blocage IP ne fonctionne pas (Linux)
+### MISP — timeout de connexion
 
 ```bash
-# Nécessite root
-sudo python3 start.py both
-
-# Vérifier les règles iptables
-sudo iptables -L INPUT -n --line-numbers | head -20
-
-# Installer iptables si absent
-sudo apt install iptables -y
-```
-
-### MISP — Timeout de connexion
-
-```bash
-# Vérifier que le conteneur MISP tourne
 docker compose ps misp.local
-
-# Voir les logs MISP
 docker compose logs misp.local --tail 50
-
-# Tester la connexion manuellement
-curl -k -H "Authorization: VOTRE_CLE" \
-  https://VOTRE_IP_MISP/users/login
+curl -k -H "Authorization: VOTRE_CLE" https://VOTRE_IP_MISP/servers/getVersion
 ```
 
-### Erreur `.env` — `invalid literal for int`
+Certificat auto-signé → `MISP_VERIFY_SSL=false` dans `.env`.
 
-```ini
-# ❌ INCORRECT — provoque une erreur Python
-BLOCK_DURATION_MIN=10    ← durée en minutes
+### `invalid literal for int()` au démarrage
 
-# ✅ CORRECT — commentaire sur sa propre ligne
-# Durée de blocage en minutes
-BLOCK_DURATION_MIN=10
-```
+Corrigé : les commentaires en fin de ligne du `.env` sont maintenant tolérés.
+Si l'erreur revient, la valeur ne contient aucun chiffre du tout.
 
-### TheHive v5 — alertes ignorées
-
-Ce bug est corrigé dans v8.1.0+. TheHive v5 utilise `_id` (underscore) et non `id`.
-Vérifier que vous utilisez bien `service_thehive_responder.py` v8.1.0 ou supérieur.
-
-### Suivre les logs en temps réel
+### Suivre les journaux
 
 ```bash
-# Linux — les deux logs simultanément
-tail -f service_a.log service_b.log
-
-# Windows PowerShell
-Get-Content service_a.log -Wait -Tail 20
-Get-Content service_b.log -Wait -Tail 20
+python start.py logs
+tail -f logs/service_a.log logs/service_b.log            # Linux
+Get-Content logs/service_a.log -Wait -Tail 20            # Windows
 ```
 
 ---
 
 ## 🔐 Sécurité
 
-> ⚠️ **Ne jamais commiter le fichier `.env` dans Git**
+> ⚠️ **Ne jamais committer le fichier `.env`** — il contient toutes vos clés API.
 
-Le fichier `.gitignore` protège automatiquement :
-- `.env` (credentials)
-- `*.log` (logs)
-- `ip_blacklist.*` (données blacklist)
-- `responder_state.json`
+`.gitignore` protège déjà `.env`, `data/`, `logs/`, `*.log`, les blacklists et
+l'état du responder.
 
-### Bonnes pratiques
+Bonnes pratiques :
 
-- Utiliser des clés API avec **permissions minimales** nécessaires
-- En production, mettre le webhook derrière **nginx avec HTTPS**
-- Pour MISP, utiliser `verify=True` avec un certificat SSL valide
-- Changer les mots de passe par défaut de MISP, MinIO immédiatement
+- clés API avec le **minimum de permissions** nécessaires ;
+- en production, webhook derrière **nginx + HTTPS** et filtrage par IP source ;
+- `MISP_VERIFY_SSL=true` et `THEHIVE_VERIFY_SSL=true` avec de vrais certificats ;
+- changer immédiatement les mots de passe par défaut de MISP, MinIO et le
+  `--secret` de TheHive dans `docker-compose.yml` ;
+- commencer avec `ACTIVE_RESPONSE=false` pour observer ce qui *serait* bloqué
+  avant d'activer le blocage réel ;
+- si une clé a fuité (dépôt public, capture d'écran…), la **révoquer et la
+  régénérer** immédiatement.
 
 ---
 
-## 📚 Ressources utiles
+## 📚 Références et documentation détaillée
+
+### TheHive / Cortex / MISP
 
 | Ressource | Lien |
 |-----------|------|
-| TheHive Documentation | [docs.strangebee.com](https://docs.strangebee.com) |
-| Cortex Documentation | [github.com/TheHive-Project/Cortex](https://github.com/TheHive-Project/Cortex) |
-| MISP Documentation | [www.misp-project.org/documentation](https://www.misp-project.org/documentation/) |
-| VirusTotal API v3 | [developers.virustotal.com](https://developers.virustotal.com/reference/overview) |
-| Suricata Rules | [suricata.readthedocs.io](https://suricata.readthedocs.io/en/suricata-6.0.0/rules/) |
-| TheHive + Cortex + MISP Setup (vidéo) | [Tutoriel YouTube — Installation complète](https://youtu.be/ovUuNQsW_FQ) |
-| Intégration TheHive + Cortex (vidéo) | [Tutoriel YouTube — Intégration](https://youtu.be/ovUuNQsW_FQ) |
-| AbuseIPDB | [abuseipdb.com](https://www.abuseipdb.com) |
-| BotFather Telegram | [t.me/BotFather](https://t.me/BotFather) |
+| Documentation TheHive 5 | [docs.strangebee.com/thehive](https://docs.strangebee.com/thehive/) |
+| Installation TheHive (Docker, DEB, RPM) | [docs.strangebee.com/thehive/installation](https://docs.strangebee.com/thehive/installation/) |
+| API REST TheHive v1 | [docs.strangebee.com/thehive/api-docs](https://docs.strangebee.com/thehive/api-docs/) |
+| Connecteurs TheHive (Cortex, MISP) | [docs.strangebee.com/thehive/administration/connectors](https://docs.strangebee.com/thehive/administration/connectors/) |
+| Documentation Cortex | [github.com/TheHive-Project/CortexDocs](https://github.com/TheHive-Project/CortexDocs) |
+| Catalogue des analyseurs Cortex | [github.com/TheHive-Project/Cortex-Analyzers](https://github.com/TheHive-Project/Cortex-Analyzers) |
+| Écrire son propre analyseur | [github.com/TheHive-Project/CortexDocs/blob/master/api/how-to-create-an-analyzer.md](https://github.com/TheHive-Project/CortexDocs/blob/master/api/how-to-create-an-analyzer.md) |
+| Documentation MISP | [misp-project.org/documentation](https://www.misp-project.org/documentation/) |
+| API REST MISP (OpenAPI) | [misp-project.org/openapi](https://www.misp-project.org/openapi/) |
+| Livre MISP (installation, tuning) | [misp.github.io/MISP/](https://misp.github.io/MISP/) |
+| MISP Docker (image utilisée ici) | [github.com/coolacid/docker-misp](https://github.com/coolacid/docker-misp) |
+
+### Détection : Suricata et Splunk
+
+| Ressource | Lien |
+|-----------|------|
+| Documentation Suricata | [docs.suricata.io](https://docs.suricata.io/) |
+| Format des règles Suricata | [docs.suricata.io/en/latest/rules/intro.html](https://docs.suricata.io/en/latest/rules/intro.html) |
+| Sortie EVE JSON (pour Splunk) | [docs.suricata.io/en/latest/output/eve/eve-json-output.html](https://docs.suricata.io/en/latest/output/eve/eve-json-output.html) |
+| Réglage des performances Suricata | [docs.suricata.io/en/latest/performance/index.html](https://docs.suricata.io/en/latest/performance/index.html) |
+| Règles Emerging Threats (gratuites) | [rules.emergingthreats.net](https://rules.emergingthreats.net/open/suricata/) |
+| Installer Splunk Enterprise | [docs.splunk.com/…/InstallonLinux](https://docs.splunk.com/Documentation/Splunk/latest/Installation/InstallonLinux) |
+| Alertes et webhooks Splunk | [docs.splunk.com/…/Webhooks](https://docs.splunk.com/Documentation/Splunk/latest/Alert/Webhooks) |
+| Universal Forwarder | [docs.splunk.com/…/Abouttheuniversalforwarder](https://docs.splunk.com/Documentation/Forwarder/latest/Forwarder/Abouttheuniversalforwarder) |
+| Langage de recherche SPL | [docs.splunk.com/Documentation/SplunkCloud/latest/SearchReference](https://docs.splunk.com/Documentation/SplunkCloud/latest/SearchReference/WhatsInThisManual) |
+
+### Threat Intelligence et enrichissement
+
+| Ressource | Lien |
+|-----------|------|
+| API VirusTotal v3 | [docs.virustotal.com/reference/overview](https://docs.virustotal.com/reference/overview) |
+| Quotas VirusTotal (offre gratuite) | [docs.virustotal.com/reference/public-vs-premium-api](https://docs.virustotal.com/reference/public-vs-premium-api) |
+| API AbuseIPDB | [docs.abuseipdb.com](https://docs.abuseipdb.com/) |
+| AlienVault OTX | [otx.alienvault.com/api](https://otx.alienvault.com/api) |
+| Shodan | [developer.shodan.io](https://developer.shodan.io/) |
+| URLhaus (abuse.ch) | [urlhaus.abuse.ch/api](https://urlhaus.abuse.ch/api/) |
+| MaxMind GeoIP | [dev.maxmind.com/geoip](https://dev.maxmind.com/geoip/) |
+
+### Infrastructure et outils
+
+| Ressource | Lien |
+|-----------|------|
+| Installer Docker Engine | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
+| Docker Compose | [docs.docker.com/compose](https://docs.docker.com/compose/) |
+| `vm.max_map_count` (Elasticsearch) | [elastic.co/guide/…/vm-max-map-count.html](https://www.elastic.co/guide/en/elasticsearch/reference/current/vm-max-map-count.html) |
+| iptables — manuel | [netfilter.org/documentation](https://www.netfilter.org/documentation/) |
+| `netsh advfirewall` — référence | [learn.microsoft.com/…/netsh-advfirewall-firewall-control-firewall-behavior](https://learn.microsoft.com/en-us/troubleshoot/windows-server/networking/netsh-advfirewall-firewall-control-firewall-behavior) |
+| API Bot Telegram | [core.telegram.org/bots/api](https://core.telegram.org/bots/api) |
+| Mots de passe d'application Gmail | [support.google.com/accounts/answer/185833](https://support.google.com/accounts/answer/185833) |
+| Documentation Flask | [flask.palletsprojects.com](https://flask.palletsprojects.com/) |
+| Documentation Requests | [requests.readthedocs.io](https://requests.readthedocs.io/) |
+
+### Méthodologie SOC
+
+| Ressource | Lien |
+|-----------|------|
+| MITRE ATT&CK | [attack.mitre.org](https://attack.mitre.org/) |
+| Guide NIST de gestion des incidents (SP 800-61) | [csrc.nist.gov/pubs/sp/800/61/r2/final](https://csrc.nist.gov/pubs/sp/800/61/r2/final) |
+| Sigma — règles de détection portables | [github.com/SigmaHQ/sigma](https://github.com/SigmaHQ/sigma) |
+| Atomic Red Team — tests de détection | [github.com/redcanaryco/atomic-red-team](https://github.com/redcanaryco/atomic-red-team) |
+| The DFIR Report — cas réels | [thedfirreport.com](https://thedfirreport.com/) |
+
+### Tutoriels vidéo
+
+| Ressource | Lien |
+|-----------|------|
+| TheHive + Cortex + MISP — installation complète | [youtu.be/ovUuNQsW_FQ](https://youtu.be/ovUuNQsW_FQ) |
+| Chaîne officielle StrangeBee | [youtube.com/@strangebee](https://www.youtube.com/@strangebee) |
 
 ---
 
-## 🤝 Contribuer
+## 📌 Journal des versions
 
-Les contributions sont les bienvenues !
-
-```bash
-# Fork → Clone → Branch
-git checkout -b feature/ma-fonctionnalite
-
-# Développer → Commit
-git commit -m "feat: description de la fonctionnalité"
-
-# Push → Pull Request
-git push origin feature/ma-fonctionnalite
-```
-
-### Idées de contributions
-
-- [ ] Support Elasticsearch/OpenSearch comme source d'alertes
-- [ ] Interface web de monitoring des cas et blocages
-- [ ] Support webhooks PagerDuty / Slack / Teams
-- [ ] Tests unitaires et d'intégration complets
-- [ ] Docker Compose tout-en-un (pipeline + infrastructure)
-- [ ] Dashboard Grafana pour les métriques SOC
-
----
-
-## 📄 Licence
-
-Distribué sous licence **MIT**. Voir [LICENSE](LICENSE) pour plus d'informations.
+| Version | Composant | Changements |
+|---------|-----------|-------------|
+| **v8.0.0** | Service A | Client TheHive REST v1 natif ; fin de `thehive4py` ; console UTF-8 Windows ; `.env` tolérant aux commentaires ; `datetime.utcnow()` remplacé ; anti-doublon sans fuite mémoire ; verrous sur les compteurs |
+| **v11.0.0** | Service B | Découverte Cortex via TheHive + rafraîchissement auto ; blocage étendu (scan de ports, exploitation, latéral, credential dumping, rançongiciel…) ; plus de règle firewall posée en simulation ; `MIN_SEVERITY` / `RESPONSE_MIN_SEV` / `BLOCK_ALL_IPS` réellement appliqués ; MISP en TLS configurable ; état écrit de façon atomique |
+| — | start.py | Chemins `src/` corrigés ; menu itératif (plus de récursion) ; commandes `init`, `unit`, `list`, `unblock`, `cortex`, `logs` ; contrôle des privilèges ; stdlib uniquement |
+| — | Projet | Arborescence `docker/ src/ suricata/ tests/ data/ logs/` ; 135 tests unitaires ; LICENSE MIT ; clé API en dur retirée de la configuration TheHive |
 
 ---
 
 <div align="center">
 
-**SOC Automation Pipeline** — Projet de Lab SOC Personnel
+**SOC Automation Pipeline** — lab SOC personnel
 
 *Automatiser la détection et la réponse aux incidents de sécurité*
 
-⭐ N'oublie pas de mettre une étoile si ce projet t'a aidé !
+⭐ Une étoile si le projet vous a aidé
 
 </div>

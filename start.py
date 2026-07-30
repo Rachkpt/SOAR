@@ -1,36 +1,54 @@
 #!/usr/bin/env python3
 """
-start.py — SOC Automation Pipeline
-====================================
-Lanceur universel : Windows, Ubuntu, Debian, CentOS, Arch, macOS
-Une seule commande pour tout installer et démarrer.
+start.py — SOC Automation Pipeline : lanceur universel
+======================================================
+Windows, Ubuntu, Debian, CentOS, Arch, macOS — une seule commande.
+
+Ce script n'utilise QUE la bibliothèque standard : il fonctionne donc
+avant même l'installation des dépendances.
 
 Usage :
-    python start.py          → menu interactif
-    python start.py install  → installer les dépendances
-    python start.py a        → lancer Service A (webhook Splunk→TheHive)
-    python start.py b        → lancer Service B (Cortex+MISP responder)
-    python start.py both     → lancer A + B ensemble
-    python start.py test     → tester toute l'intégration
-    python start.py telegram → tester Telegram
-    python start.py status   → état des services
+    python start.py                  → menu interactif
+    python start.py install          → installer les dépendances Python
+    python start.py init             → créer le .env depuis .env.example
+    python start.py a                → Service A (webhook Splunk → TheHive)
+    python start.py b                → Service B (Cortex + MISP + blocage)
+    python start.py both             → A + B ensemble, avec redémarrage auto
+    python start.py status           → état complet de l'intégration
+    python start.py test             → tests end-to-end (services lancés)
+    python start.py unit             → tests unitaires (hors ligne)
+    python start.py telegram         → envoyer un message de test Telegram
+    python start.py telegram-config  → configurer Telegram pas à pas
+    python start.py list             → IPs actuellement bloquées
+    python start.py unblock <ip>     → débloquer une IP
+    python start.py cortex           → lister les analyseurs Cortex détectés
+    python start.py logs             → afficher la fin des journaux
 """
 
+import json
 import os
+import platform
+import subprocess
 import sys
 import time
-import json
-import subprocess
-import threading
-import platform
-from pathlib import Path
+import urllib.error
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 # ══════════════════════════════════════════════════════════════════
-# COULEURS — fonctionnent sur Windows 10+, Linux, macOS
+# CONSOLE — couleurs + UTF-8 (Windows compris)
 # ══════════════════════════════════════════════════════════════════
-if platform.system() == "Windows":
-    os.system("")  # active ANSI sur Windows
+IS_WINDOWS = platform.system() == "Windows"
+
+if IS_WINDOWS:
+    os.system("")                       # active les séquences ANSI
+
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError, OSError):
+        pass
 
 C = {
     "g": "\033[92m", "y": "\033[93m", "r": "\033[91m",
@@ -39,677 +57,813 @@ C = {
     "B": "\033[1m",
 }
 
-def c(color, text): return "{}{}{}".format(C[color], text, C["x"])
-def ok(msg):   print("  {} {}".format(c("g", "✓"), msg))
-def warn(msg): print("  {} {}".format(c("y", "!"), msg))
-def err(msg):  print("  {} {}".format(c("r", "✗"), msg))
-def hdr(msg):  print("\n{}  {}  {}".format(c("c", "═"*2), c("B", msg), c("c", "═"*(50-len(msg)))))
-def sep():     print(c("m", "  " + "─"*58))
+
+def c(color, text):
+    return "{}{}{}".format(C[color], text, C["x"])
+
+
+def ok(msg):
+    print("  {} {}".format(c("g", "✓"), msg))
+
+
+def warn(msg):
+    print("  {} {}".format(c("y", "!"), msg))
+
+
+def err(msg):
+    print("  {} {}".format(c("r", "✗"), msg))
+
+
+def hdr(msg):
+    print("\n{}  {}  {}".format(c("c", "══"), c("B", msg), c("c", "═" * max(2, 50 - len(msg)))))
+
+
+def sep():
+    print(c("m", "  " + "─" * 60))
+
 
 # ══════════════════════════════════════════════════════════════════
-# CONFIGURATION
+# CHEMINS
 # ══════════════════════════════════════════════════════════════════
-SCRIPT_DIR   = Path(__file__).parent
-SERVICE_A    = SCRIPT_DIR / "service_splunk_to_thehive.py"
-SERVICE_B    = SCRIPT_DIR / "service_thehive_responder.py"
-ENV_FILE     = SCRIPT_DIR / ".env"
-REQ_FILE     = SCRIPT_DIR / "requirements.txt"
-WEBHOOK_PORT = 5000
+ROOT        = Path(__file__).resolve().parent
+SRC_DIR     = ROOT / "src"
+TESTS_DIR   = ROOT / "tests"
+DATA_DIR    = ROOT / "data"
+LOGS_DIR    = ROOT / "logs"
+SERVICE_A   = SRC_DIR / "service_a_splunk_to_thehive.py"
+SERVICE_B   = SRC_DIR / "service_b_thehive_responder.py"
+UNIT_TESTS  = TESTS_DIR / "run_tests.py"
+ENV_FILE    = ROOT / ".env"
+ENV_EXAMPLE = ROOT / ".env.example"
+REQ_FILE    = ROOT / "requirements.txt"
 
-IS_WINDOWS = platform.system() == "Windows"
-IS_LINUX   = platform.system() == "Linux"
-IS_MACOS   = platform.system() == "Darwin"
-
-# Trouver le bon python
-PYTHON = sys.executable  # utilise le même python que ce script
+PYTHON = sys.executable or "python"
 
 
 # ══════════════════════════════════════════════════════════════════
-# LECTURE DU .env
+# .env
 # ══════════════════════════════════════════════════════════════════
 def load_env() -> dict:
-    """Lit le .env et retourne un dict."""
+    """Lit le .env et retourne un dictionnaire clé → valeur."""
     cfg = {}
-    if ENV_FILE.exists():
-        with open(ENV_FILE, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, _, v = line.partition("=")
-                    cfg[k.strip()] = v.strip().strip('"').strip("'")
+    if not ENV_FILE.exists():
+        return cfg
+    try:
+        with open(ENV_FILE, encoding="utf-8-sig") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.startswith("export "):
+                    line = line[len("export "):].lstrip()
+                key, _, value = line.partition("=")
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                cfg[key.strip()] = value
+    except OSError as exc:
+        err("Lecture de .env impossible : {}".format(exc))
     return cfg
 
 
-def save_env_key(key: str, value: str):
-    """Met à jour une clé dans le .env sans toucher au reste."""
-    lines = []
-    found = False
+def save_env_key(key: str, value: str) -> None:
+    """Met à jour une clé du .env sans toucher au reste du fichier."""
+    lines, found = [], False
     if ENV_FILE.exists():
-        with open(ENV_FILE, encoding="utf-8") as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped.startswith(key + "=") or stripped.startswith(key + " ="):
-                    lines.append("{}={}\n".format(key, value))
-                    found = True
-                else:
-                    lines.append(line)
+        try:
+            with open(ENV_FILE, encoding="utf-8-sig") as fh:
+                for raw in fh:
+                    stripped = raw.strip()
+                    if stripped.startswith(key + "=") or stripped.startswith(key + " ="):
+                        lines.append("{}={}\n".format(key, value))
+                        found = True
+                    else:
+                        lines.append(raw)
+        except OSError as exc:
+            err("Lecture de .env impossible : {}".format(exc))
+            return
     if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
         lines.append("{}={}\n".format(key, value))
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
-        f.writelines(lines)
+    try:
+        with open(ENV_FILE, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+    except OSError as exc:
+        err("Écriture de .env impossible : {}".format(exc))
+
+
+def init_env() -> bool:
+    hdr("Création du fichier .env")
+    if ENV_FILE.exists():
+        ok(".env existe déjà — rien à faire ({})".format(ENV_FILE))
+        return True
+    if not ENV_EXAMPLE.exists():
+        err(".env.example introuvable dans {}".format(ROOT))
+        return False
+    try:
+        ENV_FILE.write_text(ENV_EXAMPLE.read_text(encoding="utf-8"), encoding="utf-8")
+    except OSError as exc:
+        err("Copie impossible : {}".format(exc))
+        return False
+    ok(".env créé depuis .env.example")
+    print(c("m", "  → Édite-le pour renseigner THEHIVE_URL, THEHIVE_APIKEY, etc."))
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════
-# INSTALLATION DES DÉPENDANCES
+# HTTP (stdlib)
 # ══════════════════════════════════════════════════════════════════
-def install_deps():
+def http_json(url: str, payload=None, timeout: int = 8):
+    """GET/POST JSON simple. Retourne le dict décodé ou None."""
+    data    = json.dumps(payload).encode() if payload is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    request = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+    except urllib.error.HTTPError as exc:            # 4xx/5xx : le corps reste utile
+        try:
+            body = exc.read()
+        except OSError:
+            return None
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    try:
+        return json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+
+
+def webhook_port(cfg: dict) -> int:
+    raw = str(cfg.get("LISTEN_PORT", "5000")).strip()
+    digits = ""
+    for char in raw:
+        if char.isdigit():
+            digits += char
+        elif digits:
+            break
+    return int(digits) if digits else 5000
+
+
+# ══════════════════════════════════════════════════════════════════
+# DÉPENDANCES
+# ══════════════════════════════════════════════════════════════════
+def install_deps() -> bool:
     hdr("Installation des dépendances Python")
 
     if not REQ_FILE.exists():
-        err("requirements.txt introuvable dans {}".format(SCRIPT_DIR))
-        err("Crée-le avec : flask thehive4py requests urllib3")
+        err("requirements.txt introuvable dans {}".format(ROOT))
         return False
 
-    print(c("m", "  Python  : {}".format(sys.version.split()[0])))
-    print(c("m", "  OS      : {} {}".format(platform.system(), platform.release())))
-    print(c("m", "  Pip     : {}".format(PYTHON)))
+    print(c("m", "  Python : {}".format(sys.version.split()[0])))
+    print(c("m", "  OS     : {} {}".format(platform.system(), platform.release())))
+    print(c("m", "  Binaire: {}".format(PYTHON)))
     sep()
-
-    cmd = [PYTHON, "-m", "pip", "install", "-r", str(REQ_FILE), "--quiet", "--upgrade"]
     print("  Installation en cours...\n")
 
+    base = [PYTHON, "-m", "pip", "install", "-r", str(REQ_FILE), "--upgrade"]
     try:
-        result = subprocess.run(cmd, capture_output=False, text=True)
-        if result.returncode == 0:
-            ok("Toutes les dépendances installées")
+        if subprocess.run(base).returncode == 0:
+            ok("Toutes les dépendances sont installées")
             return True
-        else:
-            # Réessayer avec --break-system-packages (Ubuntu 22.04+)
-            warn("Première tentative échouée — essai avec --break-system-packages")
-            cmd2 = cmd + ["--break-system-packages"]
-            result2 = subprocess.run(cmd2, capture_output=False, text=True)
-            if result2.returncode == 0:
-                ok("Dépendances installées (--break-system-packages)")
-                return True
-            else:
-                err("Échec installation. Lance manuellement : pip install -r requirements.txt")
-                return False
-    except Exception as e:
-        err("Erreur : {}".format(e))
+        warn("Première tentative échouée — nouvel essai avec --break-system-packages")
+        if subprocess.run(base + ["--break-system-packages"]).returncode == 0:
+            ok("Dépendances installées (--break-system-packages)")
+            return True
+        err("Échec. Lance manuellement : {} -m pip install -r requirements.txt".format(PYTHON))
+        return False
+    except OSError as exc:
+        err("Erreur : {}".format(exc))
         return False
 
 
+def check_deps(verbose: bool = True) -> bool:
+    missing = []
+    for module, package in (("flask", "flask"), ("requests", "requests"),
+                            ("urllib3", "urllib3")):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(package)
+    if missing and verbose:
+        err("Modules Python manquants : {}".format(", ".join(missing)))
+        print("    {}".format(c("c", "python start.py install")))
+    return not missing
+
+
 # ══════════════════════════════════════════════════════════════════
-# CONFIGURATION TELEGRAM INTERACTIVE
+# TELEGRAM
 # ══════════════════════════════════════════════════════════════════
-def configure_telegram():
+def configure_telegram() -> None:
     hdr("Configuration Telegram")
     cfg = load_env()
 
     print("""
-  Pour créer ton bot Telegram :
-  {}  1. Ouvre Telegram → cherche @BotFather
-  {}  2. Envoie : /newbot
-  {}  3. Donne un nom : {}
-  {}  4. Donne un username : {} (doit finir par 'bot')
-  {}  5. Copie le TOKEN donné par BotFather
-""".format(
-        c("c","→"), c("c","→"), c("c","→"), c("y","SOC_Rachad"),
-        c("c","→"), c("y","SOC_Rachad_Bot"), c("c","→")
-    ))
+  Créer le bot :
+  {}  1. Telegram → chercher @BotFather
+  {}  2. Envoyer : /newbot
+  {}  3. Choisir un nom, puis un username finissant par « bot »
+  {}  4. Copier le TOKEN renvoyé par BotFather
+""".format(c("c", "→"), c("c", "→"), c("c", "→"), c("c", "→")))
 
-    # Token
     current_token = cfg.get("TELEGRAM_TOKEN", "")
     if current_token:
-        print("  Token actuel : {}{}...".format(c("y", current_token[:12]), c("m", " (Entrée pour garder)")))
-    token = input("  {} Colle ton TOKEN BotFather : ".format(c("c","→"))).strip()
-    if not token and current_token:
-        token = current_token
+        print("  Token actuel : {}{}".format(
+            c("y", current_token[:12] + "…"), c("m", "  (Entrée pour garder)")))
+    token = input("  {} Colle ton TOKEN BotFather : ".format(c("c", "→"))).strip() or current_token
     if not token:
         err("Token requis")
         return
 
-    # Vérifier le token
+    bot_name = "ton_bot"
     print("\n  Vérification du token...")
-    try:
-        import urllib.request
-        url = "https://api.telegram.org/bot{}/getMe".format(token)
-        with urllib.request.urlopen(url, timeout=8) as resp:
-            data = json.loads(resp.read())
+    data = http_json("https://api.telegram.org/bot{}/getMe".format(token))
+    if data and data.get("ok"):
         bot_name = data.get("result", {}).get("username", "?")
         ok("Bot valide : @{}".format(bot_name))
-    except Exception as e:
-        err("Token invalide ou pas de connexion : {}".format(e))
-        if input("  Continuer quand même ? (o/N) : ").lower() != "o":
+    else:
+        err("Token invalide ou pas de connexion Internet")
+        if input("  Continuer quand même ? (o/N) : ").strip().lower() != "o":
             return
 
-    # Chat ID
     print("""
-  Pour récupérer ton Chat ID :
-  {}  1. Ouvre Telegram → envoie /start à ton bot @{}
-  {}  2. Lance cette commande dans un autre terminal :
-""".format(c("c","→"), bot_name if "bot_name" in dir() else "tonbot", c("c","→")))
-    print("     {}".format(c("y", "curl https://api.telegram.org/bot{}/getUpdates".format(token[:20]+"..."))))
-    print('  {}  3. Cherche "id" dans la réponse JSON\n'.format(c("c","→")))
+  Récupérer le Chat ID :
+  {}  1. Envoyer /start au bot @{} dans Telegram
+  {}  2. Ouvrir dans un navigateur :
+       {}
+  {}  3. Repérer « "chat":{{"id": ... }} » dans le JSON
+""".format(c("c", "→"), bot_name, c("c", "→"),
+           c("y", "https://api.telegram.org/bot{}/getUpdates".format(token)),
+           c("c", "→")))
 
     current_chat = cfg.get("TELEGRAM_CHAT_ID", "")
     if current_chat:
-        print("  Chat ID actuel : {}{}".format(c("y", current_chat), c("m", " (Entrée pour garder)")))
-    chat_id = input("  {} Colle ton Chat ID : ".format(c("c","→"))).strip()
-    if not chat_id and current_chat:
-        chat_id = current_chat
+        print("  Chat ID actuel : {}{}".format(c("y", current_chat),
+                                               c("m", "  (Entrée pour garder)")))
+    chat_id = input("  {} Colle ton Chat ID : ".format(c("c", "→"))).strip() or current_chat
     if not chat_id:
         err("Chat ID requis")
         return
 
-    # Sauvegarder
-    save_env_key("TELEGRAM_TOKEN",   token)
+    if not ENV_FILE.exists():
+        init_env()
+    save_env_key("TELEGRAM_TOKEN", token)
     save_env_key("TELEGRAM_CHAT_ID", chat_id)
     save_env_key("TELEGRAM_ENABLED", "true")
     ok("Sauvegardé dans {}".format(ENV_FILE))
 
-    # Envoyer message test
     print("\n  Envoi d'un message de test...")
-    try:
-        import urllib.request, urllib.parse
-        msg = "🧪 <b>SOC Telegram configuré !</b>\n✅ Connexion OK\n📅 {}".format(
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        )
-        payload = json.dumps({
-            "chat_id":    chat_id,
-            "text":       msg,
-            "parse_mode": "HTML",
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.telegram.org/bot{}/sendMessage".format(token),
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            resp.read()
-        ok("Message de test envoyé ! Vérifie Telegram.")
-    except Exception as e:
-        err("Erreur envoi test : {}".format(e))
+    sent = http_json(
+        "https://api.telegram.org/bot{}/sendMessage".format(token),
+        {"chat_id": chat_id,
+         "text": "🧪 <b>SOC Telegram configuré</b>\n✅ Connexion OK\n📅 {}".format(
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+         "parse_mode": "HTML"})
+    if sent and sent.get("ok"):
+        ok("Message envoyé — vérifie Telegram")
+    else:
+        description = (sent or {}).get("description", "pas de réponse")
+        err("Échec de l'envoi : {}".format(description))
+        if "chat not found" in str(description).lower():
+            warn("Envoie d'abord /start au bot dans Telegram")
 
 
-# ══════════════════════════════════════════════════════════════════
-# TEST TELEGRAM DIRECT
-# ══════════════════════════════════════════════════════════════════
-def test_telegram():
+def test_telegram() -> None:
     hdr("Test Telegram")
     cfg = load_env()
 
-    enabled  = cfg.get("TELEGRAM_ENABLED", "false").lower() == "true"
-    token    = cfg.get("TELEGRAM_TOKEN", "")
-    chat_id  = cfg.get("TELEGRAM_CHAT_ID", "")
+    enabled = cfg.get("TELEGRAM_ENABLED", "false").strip().lower() == "true"
+    token   = cfg.get("TELEGRAM_TOKEN", "")
+    chat_id = cfg.get("TELEGRAM_CHAT_ID", "")
 
     sep()
-    print("  TELEGRAM_ENABLED  : {}".format(
-        c("g","true ✓") if enabled else c("r","false ✗")
-    ))
-    print("  TELEGRAM_TOKEN    : {}".format(
-        c("g", token[:12]+"...") if token else c("r","VIDE ✗")
-    ))
-    print("  TELEGRAM_CHAT_ID  : {}".format(
-        c("g", chat_id) if chat_id else c("r","VIDE ✗")
-    ))
+    print("  TELEGRAM_ENABLED : {}".format(c("g", "true ✓") if enabled else c("r", "false ✗")))
+    print("  TELEGRAM_TOKEN   : {}".format(
+        c("g", token[:12] + "…") if token else c("r", "VIDE ✗")))
+    print("  TELEGRAM_CHAT_ID : {}".format(c("g", chat_id) if chat_id else c("r", "VIDE ✗")))
     sep()
 
     if not enabled:
         err("TELEGRAM_ENABLED=false → lance : python start.py telegram-config")
         return
-    if not token:
-        err("TELEGRAM_TOKEN vide dans .env")
-        return
-    if not chat_id:
-        err("TELEGRAM_CHAT_ID vide dans .env")
+    if not token or not chat_id:
+        err("Token ou Chat ID manquant → python start.py telegram-config")
         return
 
-    # Test getMe
     print("  Vérification du token...")
-    try:
-        import urllib.request
-        with urllib.request.urlopen(
-            "https://api.telegram.org/bot{}/getMe".format(token), timeout=8
-        ) as resp:
-            data = json.loads(resp.read())
-        bot = data.get("result", {})
-        ok("Bot @{} (id={})".format(bot.get("username","?"), bot.get("id","?")))
-    except Exception as e:
-        err("Token invalide : {}".format(e))
-        warn("Solution : recrée le token via @BotFather ou vérifie la connexion internet")
+    data = http_json("https://api.telegram.org/bot{}/getMe".format(token))
+    if not (data and data.get("ok")):
+        err("Token invalide ou pas de connexion Internet")
         return
+    bot = data.get("result", {})
+    ok("Bot @{} (id={})".format(bot.get("username", "?"), bot.get("id", "?")))
 
-    # Envoyer message test
     print("  Envoi du message de test...")
-    try:
-        import urllib.request
-        msg = (
-            "🧪 <b>TEST SOC — Service A</b>\n\n"
-            "✅ Telegram fonctionne !\n"
-            "⏰ {}\n\n"
-            "<b>TheHive :</b> {}\n"
-            "<i>Les alertes Splunk High/Critical seront notifiées ici.</i>"
-        ).format(
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            cfg.get("THEHIVE_URL", "http://10.2.3.122:9000"),
-        )
-        payload = json.dumps({
-            "chat_id":    chat_id,
-            "text":       msg,
-            "parse_mode": "HTML",
-        }).encode()
-        req = urllib.request.Request(
-            "https://api.telegram.org/bot{}/sendMessage".format(token),
-            data=payload,
-            headers={"Content-Type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            resp_data = json.loads(resp.read())
-        if resp_data.get("ok"):
-            ok("Message envoyé ! Vérifie ton Telegram maintenant.")
-        else:
-            desc = resp_data.get("description", "?")
-            err("Échec : {}".format(desc))
-            if "chat not found" in desc.lower():
-                warn("Solution : envoie /start au bot dans Telegram d'abord")
-            elif "blocked" in desc.lower():
-                warn("Solution : débloque le bot dans Telegram")
-    except Exception as e:
-        err("Erreur envoi : {}".format(e))
+    sent = http_json(
+        "https://api.telegram.org/bot{}/sendMessage".format(token),
+        {"chat_id": chat_id,
+         "text": ("🧪 <b>TEST SOC — pipeline</b>\n\n✅ Telegram fonctionne\n⏰ {}\n\n"
+                  "<b>TheHive :</b> {}\n"
+                  "<i>Les alertes High/Critical arriveront ici.</i>").format(
+             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+             cfg.get("THEHIVE_URL", "non défini")),
+         "parse_mode": "HTML"})
+    if sent and sent.get("ok"):
+        ok("Message envoyé — vérifie Telegram")
+        return
+    description = str((sent or {}).get("description", "pas de réponse"))
+    err("Échec : {}".format(description))
+    if "chat not found" in description.lower():
+        warn("Envoie /start au bot dans Telegram, puis relance ce test")
+    elif "blocked" in description.lower():
+        warn("Débloque le bot dans Telegram")
 
 
 # ══════════════════════════════════════════════════════════════════
 # LANCEMENT DES SERVICES
 # ══════════════════════════════════════════════════════════════════
-def run_service(script: Path, name: str) -> subprocess.Popen:
-    """Lance un service dans un subprocess."""
+def service_env() -> dict:
+    env = os.environ.copy()
+    env.update({k: str(v) for k, v in load_env().items()})
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env["PYTHONUNBUFFERED"] = "1"
+    return env
+
+
+def run_service(script: Path, name: str):
     if not script.exists():
         err("Script introuvable : {}".format(script))
         return None
-
-    env = os.environ.copy()
-
-    # Charger le .env dans l'env du subprocess
-    cfg = load_env()
-    env.update(cfg)
-
     print("  Lancement de {}...".format(c("b", name)))
-
-    proc = subprocess.Popen(
-        [PYTHON, str(script)],
-        cwd=str(SCRIPT_DIR),
-        env=env,
-        # Pas de capture — affiche directement dans le terminal
-    )
-    return proc
+    try:
+        return subprocess.Popen([PYTHON, str(script)], cwd=str(ROOT), env=service_env())
+    except OSError as exc:
+        err("Lancement impossible : {}".format(exc))
+        return None
 
 
-def launch_service_a():
-    hdr("Service A — Splunk → TheHive (webhook :5000)")
-    check_env()
+def run_service_command(args: list) -> int:
+    """Exécute le Service B en mode CLI (list, unblock, status, cortex)."""
+    if not SERVICE_B.exists():
+        err("Script introuvable : {}".format(SERVICE_B))
+        return 1
+    if not check_deps():
+        return 1
+    try:
+        return subprocess.run([PYTHON, str(SERVICE_B)] + args,
+                              cwd=str(ROOT), env=service_env()).returncode
+    except OSError as exc:
+        err("Exécution impossible : {}".format(exc))
+        return 1
+
+
+def _wait_for(proc, name: str) -> None:
+    print("")
+    ok("{} lancé (PID {})".format(name, proc.pid))
+    print(c("m", "  Ctrl+C pour arrêter\n"))
+    try:
+        proc.wait()
+    except KeyboardInterrupt:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        ok("{} arrêté".format(name))
+
+
+def launch_service_a() -> None:
+    hdr("Service A — Splunk → TheHive (webhook)")
+    if not preflight():
+        return
     proc = run_service(SERVICE_A, "Service A")
     if proc:
-        print("")
-        ok("Service A lancé (PID {})".format(proc.pid))
-        print(c("m", "  Ctrl+C pour arrêter\n"))
-        try:
-            proc.wait()
-        except KeyboardInterrupt:
-            proc.terminate()
-            ok("Service A arrêté")
+        _wait_for(proc, "Service A")
 
 
-def launch_service_b():
-    hdr("Service B — TheHive Responder (Cortex + MISP)")
-    check_env()
+def launch_service_b() -> None:
+    hdr("Service B — Responder (Cortex + MISP + blocage)")
+    if not preflight():
+        return
     proc = run_service(SERVICE_B, "Service B")
     if proc:
-        print("")
-        ok("Service B lancé (PID {})".format(proc.pid))
-        print(c("m", "  Ctrl+C pour arrêter\n"))
-        try:
-            proc.wait()
-        except KeyboardInterrupt:
-            proc.terminate()
-            ok("Service B arrêté")
+        _wait_for(proc, "Service B")
 
 
-def launch_both():
-    hdr("Service A + B — Lancement simultané")
-    check_env()
+def launch_both() -> None:
+    hdr("Services A + B — lancement simultané")
+    if not preflight():
+        return
 
-    proc_a = run_service(SERVICE_A, "Service A (webhook :5000)")
+    proc_a = run_service(SERVICE_A, "Service A (webhook)")
     time.sleep(2)
-    proc_b = run_service(SERVICE_B, "Service B (responder Cortex+MISP)")
-
+    proc_b = run_service(SERVICE_B, "Service B (responder)")
     if not proc_a or not proc_b:
+        for proc in (proc_a, proc_b):
+            if proc and proc.poll() is None:
+                proc.terminate()
         return
 
     print("")
-    ok("Service A PID {}".format(proc_a.pid))
-    ok("Service B PID {}".format(proc_b.pid))
-    print(c("m", "\n  Les deux services tournent. Ctrl+C pour arrêter.\n"))
+    ok("Service A — PID {}".format(proc_a.pid))
+    ok("Service B — PID {}".format(proc_b.pid))
+    print(c("m", "\n  Les deux services tournent. Ctrl+C pour tout arrêter.\n"))
 
     try:
         while True:
-            # Vérifier que les deux sont toujours vivants
             if proc_a.poll() is not None:
-                warn("Service A s'est arrêté (code {}) — redémarrage...".format(proc_a.returncode))
-                proc_a = run_service(SERVICE_A, "Service A")
+                warn("Service A s'est arrêté (code {}) — redémarrage".format(proc_a.returncode))
+                proc_a = run_service(SERVICE_A, "Service A") or proc_a
             if proc_b.poll() is not None:
-                warn("Service B s'est arrêté (code {}) — redémarrage...".format(proc_b.returncode))
-                proc_b = run_service(SERVICE_B, "Service B")
+                warn("Service B s'est arrêté (code {}) — redémarrage".format(proc_b.returncode))
+                proc_b = run_service(SERVICE_B, "Service B") or proc_b
             time.sleep(5)
     except KeyboardInterrupt:
         print("")
         ok("Arrêt demandé...")
-        for p, n in [(proc_a, "Service A"), (proc_b, "Service B")]:
-            if p and p.poll() is None:
-                p.terminate()
-                ok("{} arrêté".format(n))
+        for proc, name in ((proc_a, "Service A"), (proc_b, "Service B")):
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                ok("{} arrêté".format(name))
 
 
 # ══════════════════════════════════════════════════════════════════
-# VÉRIFICATION DE L'ENVIRONNEMENT
+# VÉRIFICATIONS
 # ══════════════════════════════════════════════════════════════════
-def check_env():
-    cfg = load_env()
+def is_admin() -> bool:
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:                     # noqa: BLE001
+            return False
+    try:
+        return os.geteuid() == 0
+    except AttributeError:
+        return False
+
+
+def preflight() -> bool:
+    """Contrôles avant lancement. Retourne False si un blocage est fatal."""
+    DATA_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(exist_ok=True)
+
+    if not check_deps():
+        return False
+
+    if not ENV_FILE.exists():
+        warn(".env absent — création depuis .env.example")
+        if not init_env():
+            return False
+
+    cfg    = load_env()
     issues = []
-
-    if not cfg.get("THEHIVE_APIKEY") and not cfg.get("THEHIVE_URL"):
-        issues.append("THEHIVE_URL et THEHIVE_APIKEY non définis")
-
-    tg_enabled = cfg.get("TELEGRAM_ENABLED","false").lower() == "true"
-    if tg_enabled:
+    if not cfg.get("THEHIVE_URL"):
+        issues.append("THEHIVE_URL n'est pas défini dans .env")
+    if not cfg.get("THEHIVE_APIKEY"):
+        issues.append("THEHIVE_APIKEY n'est pas défini dans .env")
+    if cfg.get("TELEGRAM_ENABLED", "false").strip().lower() == "true":
         if not cfg.get("TELEGRAM_TOKEN"):
-            issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_TOKEN vide")
+            issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_TOKEN est vide")
         if not cfg.get("TELEGRAM_CHAT_ID"):
-            issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_CHAT_ID vide")
+            issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_CHAT_ID est vide")
+    if cfg.get("ACTIVE_RESPONSE", "false").strip().lower() == "true" and not is_admin():
+        issues.append("ACTIVE_RESPONSE=true mais le script n'est pas admin/root "
+                      "— le blocage firewall échouera")
 
     if issues:
         print("")
-        for i in issues:
-            warn(i)
+        for issue in issues:
+            warn(issue)
         print("")
+    return True
 
 
-def check_status():
+def check_status() -> None:
     hdr("État de l'intégration")
-    cfg = load_env()
+    cfg  = load_env()
+    port = webhook_port(cfg)
     sep()
 
-    # .env
-    env_status = c("g","✓ trouvé") if ENV_FILE.exists() else c("r","✗ manquant")
-    print("  .env file         : {}".format(env_status))
-
-    # Scripts
-    for name, path in [("Service A", SERVICE_A), ("Service B", SERVICE_B)]:
-        s = c("g","✓ trouvé") if path.exists() else c("r","✗ manquant")
-        print("  {}  : {}".format(name, s))
-
+    print("  .env              : {}".format(
+        c("g", "✓ " + str(ENV_FILE)) if ENV_FILE.exists() else c("r", "✗ manquant")))
+    for name, path in (("Service A", SERVICE_A), ("Service B", SERVICE_B)):
+        print("  {:<18}: {}".format(
+            name, c("g", "✓ " + path.name) if path.exists() else c("r", "✗ manquant")))
+    print("  Dépendances       : {}".format(
+        c("g", "✓ installées") if check_deps(verbose=False) else c("r", "✗ manquantes")))
+    print("  Privilèges        : {}".format(
+        c("g", "✓ admin/root") if is_admin() else c("y", "utilisateur standard")))
     sep()
 
-    # Config TheHive
-    th_url = cfg.get("THEHIVE_URL","NON DEFINI")
-    th_key = cfg.get("THEHIVE_APIKEY","")
-    print("  TheHive URL       : {}".format(c("c", th_url)))
-    print("  TheHive API Key   : {}".format(
-        c("g", th_key[:10]+"...") if th_key else c("r","VIDE")
-    ))
+    def show(label, value, secret=False):
+        if not value:
+            print("  {:<18}: {}".format(label, c("r", "VIDE")))
+        elif secret:
+            print("  {:<18}: {}".format(label, c("g", value[:10] + "…")))
+        else:
+            print("  {:<18}: {}".format(label, c("c", value)))
 
-    # Config Cortex
-    cx_url = cfg.get("CORTEX_URL","NON DEFINI")
-    cx_key = cfg.get("CORTEX_APIKEY","")
-    print("  Cortex URL        : {}".format(c("c", cx_url)))
-    print("  Cortex API Key    : {}".format(
-        c("g", cx_key[:10]+"...") if cx_key else c("r","VIDE")
-    ))
-
-    # Config MISP
-    misp_url = cfg.get("MISP_URL","NON DEFINI")
-    misp_key = cfg.get("MISP_APIKEY","")
-    misp_en  = cfg.get("MISP_ENABLED","false")
-    print("  MISP URL          : {}".format(c("c", misp_url)))
-    print("  MISP Enabled      : {}".format(
-        c("g","true ✓") if misp_en.lower()=="true" else c("y","false")
-    ))
-
+    show("TheHive URL", cfg.get("THEHIVE_URL", ""))
+    show("TheHive API Key", cfg.get("THEHIVE_APIKEY", ""), secret=True)
+    show("Cortex URL", cfg.get("CORTEX_URL", ""))
+    show("Cortex API Key", cfg.get("CORTEX_APIKEY", ""), secret=True)
+    show("MISP URL", cfg.get("MISP_URL", ""))
+    print("  {:<18}: {}".format("MISP activé", (
+        c("g", "true ✓") if cfg.get("MISP_ENABLED", "false").lower() == "true"
+        else c("y", "false"))))
+    show("VirusTotal Key", cfg.get("VT_APIKEY", ""), secret=True)
     sep()
 
-    # Telegram
-    tg_en   = cfg.get("TELEGRAM_ENABLED","false").lower() == "true"
-    tg_tok  = cfg.get("TELEGRAM_TOKEN","")
-    tg_chat = cfg.get("TELEGRAM_CHAT_ID","")
-    print("  Telegram Enabled  : {}".format(c("g","true ✓") if tg_en else c("y","false")))
-    print("  Telegram Token    : {}".format(
-        c("g", tg_tok[:12]+"...") if tg_tok else c("r","VIDE — configurer!")
-    ))
-    print("  Telegram Chat ID  : {}".format(
-        c("g", tg_chat) if tg_chat else c("r","VIDE — configurer!")
-    ))
-
+    telegram_on = cfg.get("TELEGRAM_ENABLED", "false").strip().lower() == "true"
+    print("  {:<18}: {}".format("Telegram activé",
+                                c("g", "true ✓") if telegram_on else c("y", "false")))
+    show("Telegram Token", cfg.get("TELEGRAM_TOKEN", ""), secret=True)
+    show("Telegram Chat ID", cfg.get("TELEGRAM_CHAT_ID", ""))
     sep()
 
-    # Webhook accessible ?
-    try:
-        import urllib.request
-        with urllib.request.urlopen(
-            "http://localhost:{}/health".format(WEBHOOK_PORT), timeout=3
-        ) as resp:
-            data = json.loads(resp.read())
-        status = data.get("status","?")
-        th_ok  = data.get("thehive_ok", False)
-        print("  Webhook :{}      : {}".format(
-            WEBHOOK_PORT,
-            c("g","ACTIF ✓ | TheHive: {}".format("OK ✓" if th_ok else "ERREUR ✗"))
-        ))
-    except Exception:
-        print("  Webhook :{}      : {}".format(
-            WEBHOOK_PORT, c("y","non démarré (normal si Service A pas lancé)")
-        ))
-
+    active = cfg.get("ACTIVE_RESPONSE", "false").strip().lower() == "true"
+    print("  {:<18}: {}".format("Réponse active", (
+        c("r", "true — blocage RÉEL") if active else c("y", "false — simulation"))))
+    print("  {:<18}: {} min".format("Durée blocage", cfg.get("BLOCK_DURATION_MIN", "10")))
     sep()
 
-    if not tg_en or not tg_tok or not tg_chat:
-        print("\n  {} Pour configurer Telegram :".format(c("y","!")))
-        print("    {}".format(c("c","python start.py telegram-config")))
-    if tg_en and tg_tok and tg_chat:
-        print("\n  {} Pour tester Telegram :".format(c("g","✓")))
-        print("    {}".format(c("c","python start.py telegram")))
-
-
-# ══════════════════════════════════════════════════════════════════
-# TEST COMPLET
-# ══════════════════════════════════════════════════════════════════
-def run_tests():
-    hdr("Test complet de l'intégration")
-
-    try:
-        import urllib.request
-
-        tests_ok = 0
-        tests_ko = 0
-
-        def test(name, fn):
-            nonlocal tests_ok, tests_ko
-            try:
-                result = fn()
-                if result:
-                    ok(name)
-                    tests_ok += 1
-                else:
-                    err(name)
-                    tests_ko += 1
-            except Exception as e:
-                err("{} — {}".format(name, e))
-                tests_ko += 1
-
-        def health():
-            with urllib.request.urlopen(
-                "http://localhost:{}/health".format(WEBHOOK_PORT), timeout=5
-            ) as r:
-                d = json.loads(r.read())
-            return d.get("thehive_ok", False)
-
-        def send_test_alert():
-            payload = json.dumps({
-                "search_name": "TEST AUTOMATIQUE start.py",
-                "severity": "high",
-                "result": {
-                    "host": "test-host",
-                    "src_ip": "10.2.3.50",
-                    "user": "root",
-                    "source": "/var/log/auth.log",
-                    "_time": datetime.utcnow().isoformat(),
-                }
-            }).encode()
-            req = urllib.request.Request(
-                "http://localhost:{}/alert".format(WEBHOOK_PORT),
-                data=payload,
-                headers={"Content-Type": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as r:
-                d = json.loads(r.read())
-            return d.get("status") in ("created", "duplicate")
-
-        def tg_test():
-            with urllib.request.urlopen(
-                "http://localhost:{}/telegram-test".format(WEBHOOK_PORT), timeout=10
-            ) as r:
-                d = json.loads(r.read())
-            return d.get("status") == "success"
-
-        sep()
-        test("Service A webhook actif sur :{}".format(WEBHOOK_PORT), health)
-        test("Alerte test → TheHive", send_test_alert)
-        test("Notification Telegram", tg_test)
-        sep()
-
-        total = tests_ok + tests_ko
-        print("  Résultat : {}/{} tests OK".format(
-            c("g" if tests_ko==0 else "y", tests_ok), total
-        ))
-
-        if tests_ko > 0:
-            print("")
-            warn("Service A doit être lancé d'abord : python start.py a")
-
-    except Exception as e:
-        err("Erreur tests : {}".format(e))
-        warn("Lance Service A d'abord : python start.py a")
-
-
-# ══════════════════════════════════════════════════════════════════
-# MENU PRINCIPAL
-# ══════════════════════════════════════════════════════════════════
-def menu():
-    os.system("cls" if IS_WINDOWS else "clear")
-
-    cfg = load_env()
-    tg_ok = (cfg.get("TELEGRAM_ENABLED","false").lower()=="true"
-             and cfg.get("TELEGRAM_TOKEN","")
-             and cfg.get("TELEGRAM_CHAT_ID",""))
-
-    print("")
-    print(c("c","  ╔══════════════════════════════════════════════════════╗"))
-    print(c("c","  ║") + c("B","   🛡️  SOC Automation Pipeline — Rachad Lab          ") + c("c","║"))
-    print(c("c","  ╚══════════════════════════════════════════════════════╝"))
-    print("")
-    print("  TheHive  : {}".format(c("c", cfg.get("THEHIVE_URL","NON DEFINI"))))
-    print("  Cortex   : {}".format(c("c", cfg.get("CORTEX_URL","NON DEFINI"))))
-    print("  MISP     : {}".format(c("c", cfg.get("MISP_URL","NON DEFINI"))))
-    print("  Telegram : {}".format(
-        c("g","✅ Configuré") if tg_ok else c("r","❌ Non configuré")
-    ))
-    print("")
-    sep()
-    print(c("B","  Que veux-tu faire ?"))
-    sep()
-    print("  {}  Installer les dépendances Python".format(c("y","[1]")))
-    print("  {}  Lancer Service A (webhook Splunk→TheHive)".format(c("y","[2]")))
-    print("  {}  Lancer Service B (Cortex + MISP responder)".format(c("y","[3]")))
-    print("  {}  Lancer A + B ensemble".format(c("y","[4]")))
-    print("  {}  {} Configurer Telegram".format(
-        c("y","[5]"),
-        c("r","[REQUIS]") if not tg_ok else c("g","[OK]")
-    ))
-    print("  {}  Tester Telegram (envoyer message de test)".format(c("y","[6]")))
-    print("  {}  État de l'intégration".format(c("y","[7]")))
-    print("  {}  Lancer les tests complets".format(c("y","[8]")))
-    print("  {}  Quitter".format(c("m","[0]")))
-    sep()
-
-    choice = input("  {} Choix : ".format(c("c","→"))).strip()
-
-    actions = {
-        "1": install_deps,
-        "2": launch_service_a,
-        "3": launch_service_b,
-        "4": launch_both,
-        "5": configure_telegram,
-        "6": test_telegram,
-        "7": check_status,
-        "8": run_tests,
-        "0": lambda: sys.exit(0),
-    }
-
-    fn = actions.get(choice)
-    if fn:
-        fn()
+    health = http_json("http://127.0.0.1:{}/health".format(port), timeout=4)
+    if health:
+        thehive_ok = bool(health.get("thehive") or health.get("thehive_ok"))
+        print("  Webhook :{:<9}: {}".format(port, c(
+            "g" if thehive_ok else "y",
+            "ACTIF ✓ | TheHive : {}".format("OK ✓" if thehive_ok else "injoignable ✗"))))
+        stats = health.get("stats") or {}
+        if stats:
+            print("  {:<18}: {}".format("Statistiques", ", ".join(
+                "{}={}".format(k, v) for k, v in sorted(stats.items()))))
     else:
-        warn("Choix invalide")
+        print("  Webhook :{:<9}: {}".format(
+            port, c("y", "non démarré (normal si le Service A n'est pas lancé)")))
+    sep()
 
-    if choice not in ("2", "3", "4"):
-        input("\n  {} Appuie sur Entrée pour revenir au menu...".format(c("m","→")))
-        menu()
+    run_service_command(["list"])
+
+    if not telegram_on or not cfg.get("TELEGRAM_TOKEN") or not cfg.get("TELEGRAM_CHAT_ID"):
+        print("\n  {} Configurer Telegram : {}".format(
+            c("y", "!"), c("c", "python start.py telegram-config")))
+
+
+# ══════════════════════════════════════════════════════════════════
+# TESTS
+# ══════════════════════════════════════════════════════════════════
+def run_unit_tests() -> int:
+    hdr("Tests unitaires (hors ligne)")
+    if not UNIT_TESTS.exists():
+        err("Fichier de tests introuvable : {}".format(UNIT_TESTS))
+        return 1
+    if not check_deps():
+        return 1
+    return subprocess.run([PYTHON, str(UNIT_TESTS)], cwd=str(ROOT)).returncode
+
+
+def run_tests() -> None:
+    hdr("Tests end-to-end de l'intégration")
+    cfg  = load_env()
+    port = webhook_port(cfg)
+
+    passed = failed = 0
+
+    def check(name, fn):
+        nonlocal passed, failed
+        try:
+            if fn():
+                ok(name)
+                passed += 1
+                return
+        except Exception as exc:              # noqa: BLE001 — un test ne doit pas tout stopper
+            err("{} — {}".format(name, exc))
+            failed += 1
+            return
+        err(name)
+        failed += 1
+
+    def health():
+        data = http_json("http://127.0.0.1:{}/health".format(port), timeout=6)
+        return bool(data and (data.get("thehive") or data.get("thehive_ok")))
+
+    def send_alert():
+        data = http_json("http://127.0.0.1:{}/alert".format(port), {
+            "search_name": "TEST AUTOMATIQUE start.py",
+            "severity": "high",
+            "result": {
+                "host":   "test-host",
+                "src_ip": "185.220.101.50",
+                "user":   "root",
+                "source": "/var/log/auth.log",
+                "_time":  datetime.now().isoformat(),
+            },
+        }, timeout=60)
+        return bool(data and data.get("status") in ("created", "duplicate", "rate_limited"))
+
+    def telegram_ping():
+        data = http_json("http://127.0.0.1:{}/telegram-test".format(port), timeout=15)
+        return bool(data and data.get("status") in ("success", "disabled"))
+
+    sep()
+    check("Service A joignable sur :{} et TheHive OK".format(port), health)
+    check("Alerte de test acceptée par TheHive", send_alert)
+    check("Notification Telegram", telegram_ping)
+    sep()
+
+    total = passed + failed
+    print("  Résultat : {}/{} tests OK".format(c("g" if not failed else "y", passed), total))
+    if failed:
+        print("")
+        warn("Lance d'abord les services : python start.py both")
+
+
+# ══════════════════════════════════════════════════════════════════
+# LOGS
+# ══════════════════════════════════════════════════════════════════
+def show_logs(lines: int = 30) -> None:
+    hdr("Derniers journaux")
+    found = False
+    for log_file in sorted(LOGS_DIR.glob("*.log")):
+        found = True
+        sep()
+        print("  {}".format(c("B", str(log_file))))
+        sep()
+        try:
+            content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError as exc:
+            err("Lecture impossible : {}".format(exc))
+            continue
+        for line in content[-lines:]:
+            print("  " + line)
+    if not found:
+        warn("Aucun journal dans {} — lance d'abord un service".format(LOGS_DIR))
+
+
+# ══════════════════════════════════════════════════════════════════
+# MENU
+# ══════════════════════════════════════════════════════════════════
+MENU_ENTRIES = [
+    ("1", "Installer les dépendances Python", install_deps),
+    ("2", "Créer / réinitialiser le fichier .env", init_env),
+    ("3", "Lancer le Service A (webhook Splunk → TheHive)", launch_service_a),
+    ("4", "Lancer le Service B (Cortex + MISP + blocage)", launch_service_b),
+    ("5", "Lancer A + B ensemble", launch_both),
+    ("6", "Configurer Telegram", configure_telegram),
+    ("7", "Tester Telegram", test_telegram),
+    ("8", "État de l'intégration", check_status),
+    ("9", "Tests end-to-end (services lancés)", run_tests),
+    ("10", "Tests unitaires (hors ligne)", run_unit_tests),
+    ("11", "Analyseurs Cortex détectés", lambda: run_service_command(["cortex"])),
+    ("12", "IPs actuellement bloquées", lambda: run_service_command(["list"])),
+    ("13", "Afficher les journaux", show_logs),
+]
+BLOCKING_CHOICES = {"3", "4", "5"}
+
+
+def menu() -> None:
+    while True:
+        os.system("cls" if IS_WINDOWS else "clear")
+        cfg = load_env()
+        telegram_ready = (cfg.get("TELEGRAM_ENABLED", "false").strip().lower() == "true"
+                          and cfg.get("TELEGRAM_TOKEN") and cfg.get("TELEGRAM_CHAT_ID"))
+
+        print("")
+        print(c("c", "  ╔══════════════════════════════════════════════════════╗"))
+        print(c("c", "  ║") + c("B", "   🛡️  SOC Automation Pipeline — SOAR                 ")
+              + c("c", "║"))
+        print(c("c", "  ╚══════════════════════════════════════════════════════╝"))
+        print("")
+        print("  TheHive  : {}".format(c("c", cfg.get("THEHIVE_URL", "non défini"))))
+        print("  Cortex   : {}".format(c("c", cfg.get("CORTEX_URL", "non défini"))))
+        print("  MISP     : {}".format(c("c", cfg.get("MISP_URL", "non défini"))))
+        print("  Telegram : {}".format(
+            c("g", "✅ configuré") if telegram_ready else c("r", "❌ non configuré")))
+        print("  Blocage  : {}".format(
+            c("r", "🔴 RÉEL")
+            if cfg.get("ACTIVE_RESPONSE", "false").strip().lower() == "true"
+            else c("y", "⚠️ simulation")))
+        print("")
+        sep()
+        print(c("B", "  Que veux-tu faire ?"))
+        sep()
+        for key, label, _ in MENU_ENTRIES:
+            print("  {}  {}".format(c("y", "[{}]".format(key)).ljust(16), label))
+        print("  {}  Quitter".format(c("m", "[0]").ljust(16)))
+        sep()
+
+        try:
+            choice = input("  {} Choix : ".format(c("c", "→"))).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return
+
+        if choice == "0":
+            return
+
+        action = next((fn for key, _, fn in MENU_ENTRIES if key == choice), None)
+        if action is None:
+            warn("Choix invalide")
+        else:
+            try:
+                action()
+            except KeyboardInterrupt:
+                print("")
+                warn("Interrompu")
+
+        if choice not in BLOCKING_CHOICES:
+            try:
+                input("\n  {} Entrée pour revenir au menu...".format(c("m", "→")))
+            except (EOFError, KeyboardInterrupt):
+                print("")
+                return
 
 
 # ══════════════════════════════════════════════════════════════════
 # POINT D'ENTRÉE
 # ══════════════════════════════════════════════════════════════════
-if __name__ == "__main__":
-    args = sys.argv[1:]
+USAGE = """
+Usage : python start.py [commande]
+
+  install          Installer les dépendances Python
+  init             Créer le .env depuis .env.example
+  a                Service A — webhook Splunk → TheHive
+  b                Service B — Cortex + MISP + blocage firewall
+  both             Lancer A + B avec redémarrage automatique
+  status           État complet de l'intégration
+  test             Tests end-to-end (services lancés)
+  unit             Tests unitaires (hors ligne)
+  telegram         Envoyer un message de test Telegram
+  telegram-config  Configurer Telegram pas à pas
+  list             Lister les IPs bloquées
+  unblock <ip>     Débloquer une IP
+  cortex           Lister les analyseurs Cortex détectés
+  logs             Afficher la fin des journaux
+
+  (sans argument)  Menu interactif
+"""
+
+
+def main(argv=None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    DATA_DIR.mkdir(exist_ok=True)
+    LOGS_DIR.mkdir(exist_ok=True)
 
     if not args:
         menu()
+        return 0
 
-    elif args[0] == "install":
-        install_deps()
+    command = args[0].lower()
 
-    elif args[0] == "a":
+    if command == "install":
+        return 0 if install_deps() else 1
+    if command == "init":
+        return 0 if init_env() else 1
+    if command == "a":
         launch_service_a()
-
-    elif args[0] == "b":
+        return 0
+    if command == "b":
         launch_service_b()
-
-    elif args[0] in ("both", "all"):
+        return 0
+    if command in ("both", "all"):
         launch_both()
-
-    elif args[0] in ("telegram", "tg"):
+        return 0
+    if command in ("telegram", "tg"):
         test_telegram()
-
-    elif args[0] in ("telegram-config", "tg-config"):
+        return 0
+    if command in ("telegram-config", "tg-config"):
         configure_telegram()
-
-    elif args[0] in ("status", "st"):
+        return 0
+    if command in ("status", "st"):
         check_status()
-
-    elif args[0] in ("test", "tests"):
+        return 0
+    if command in ("test", "tests"):
         run_tests()
+        return 0
+    if command in ("unit", "unittest", "unit-tests"):
+        return run_unit_tests()
+    if command in ("list", "ls", "blocked"):
+        return run_service_command(["list"])
+    if command == "unblock":
+        if len(args) < 2:
+            err("Usage : python start.py unblock <ip>")
+            return 2
+        return run_service_command(["unblock", args[1]])
+    if command in ("cortex", "analyzers"):
+        return run_service_command(["cortex"])
+    if command in ("logs", "log"):
+        show_logs()
+        return 0
 
-    else:
-        print("""
-Usage : python start.py [commande]
+    print(USAGE)
+    return 2
 
-  install          Installer les dépendances
-  a                Lancer Service A (webhook Splunk→TheHive :5000)
-  b                Lancer Service B (Cortex + MISP responder)
-  both             Lancer A + B ensemble avec redémarrage auto
-  telegram         Tester Telegram (envoyer un message de test)
-  telegram-config  Configurer Telegram interactivement
-  status           État de toute l'intégration
-  test             Tests complets end-to-end
 
-  (sans argument)  Menu interactif
-""")
+if __name__ == "__main__":
+    sys.exit(main())
