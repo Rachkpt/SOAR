@@ -819,6 +819,8 @@ def menu() -> None:
         print(c("c", "  ╔══════════════════════════════════════════════════════╗"))
         print(c("c", "  ║") + c("B", "   🛡️  SOC Automation Pipeline — SOAR                 ")
               + c("c", "║"))
+        print(c("c", "  ║") + c("m", "        Réponse automatisée aux incidents  ·  12ak_H4ck")
+              + c("c", "║"))
         print(c("c", "  ╚══════════════════════════════════════════════════════╝"))
         print("")
         print("  TheHive  : {}".format(c("c", cfg.get("THEHIVE_URL", "non défini"))))

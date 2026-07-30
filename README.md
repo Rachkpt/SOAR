@@ -16,6 +16,18 @@ Suricata / Splunk → TheHive → Cortex → MISP → VirusTotal → Réponse ac
 
 **[📦 Guide d'installation complet → INSTALL.md](INSTALL.md)**
 
+[![LinkedIn](https://img.shields.io/badge/Voir_le_post_LinkedIn-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/posts/ar-rachad-aledji_cybersecurity-infosec-soc-ugcPost-7450607300249088001-rPXu/)
+
+</div>
+
+---
+
+<div align="center">
+
+### 🗺️ Topologie du lab
+
+<img src="TOPO.jpg" alt="Topologie du SOC : Splunk, TheHive, Cortex, MISP, VirusTotal, Telegram" width="820">
+
 </div>
 
 ---
@@ -102,7 +114,10 @@ dossier n'est analysé tant que vous n'en avez désigné un.
 
 ---
 
-## Architecture
+## Architecture détaillée
+
+Le schéma ci-dessus montre le lab. Voici le détail des flux et de la réponse
+active :
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -227,6 +242,17 @@ Splunk, l'activation de la réponse active et le dépannage sont détaillés dan
 
 ---
 
+## Auteur
+
+**Rachad Aledji** — alias **12ak_H4ck**
+
+[![LinkedIn](https://img.shields.io/badge/LinkedIn-ar--rachad--aledji-0A66C2?style=flat-square&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/ar-rachad-aledji/)
+[![GitHub](https://img.shields.io/badge/GitHub-Rachkpt-181717?style=flat-square&logo=github&logoColor=white)](https://github.com/Rachkpt)
+
+📣 **[Le post LinkedIn qui présente ce projet](https://www.linkedin.com/posts/ar-rachad-aledji_cybersecurity-infosec-soc-ugcPost-7450607300249088001-rPXu/)**
+
+---
+
 ## Licence
 
 MIT — voir [LICENSE](LICENSE).
@@ -235,7 +261,7 @@ MIT — voir [LICENSE](LICENSE).
 
 <div align="center">
 
-**SOC Automation Pipeline** — lab SOC personnel
+**SOC Automation Pipeline** — lab SOC personnel par **12ak_H4ck**
 
 ⭐ Une étoile si le projet vous a aidé
 

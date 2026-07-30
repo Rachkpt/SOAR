@@ -3,7 +3,7 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  SOC Automation Pipeline — Service A                        ║
 ║  Splunk → TheHive  (webhook + enrichissement VirusTotal)    ║
-║  Version : 8.0.0                                            ║
+║  Version : 8.0.0        —        By 12ak_H4ck               ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Flux :

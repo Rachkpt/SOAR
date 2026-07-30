@@ -3,6 +3,7 @@
 ╔══════════════════════════════════════════════════════════════╗
 ║  SOC Automation Pipeline — Service B                        ║
 ║  TheHive Responder — Full Auto v11.0.0                      ║
+║  By 12ak_H4ck                                               ║
 ╚══════════════════════════════════════════════════════════════╝
 
 Flux 100 % automatique, pour chaque alerte TheHive :

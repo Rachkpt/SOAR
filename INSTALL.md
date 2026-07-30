@@ -3,6 +3,10 @@
 Toutes les commandes du projet sont ici. Pour comprendre ce que fait le pipeline
 avant de l'installer, lisez d'abord le **[README](README.md)**.
 
+Une fois l'installation terminée, déroulez la
+**[checklist de validation](#️-valider-votre-installation)** : elle vérifie en
+neuf commandes que chaque maillon fonctionne réellement.
+
 ---
 
 ## 🎬 Vidéos de référence
@@ -35,6 +39,7 @@ correctifs (voir [§1](#1️⃣-infrastructure-docker)).
 - [Toutes les commandes](#-toutes-les-commandes)
 - [Endpoints du Service A](#-endpoints-du-service-a)
 - [Tests](#-tests)
+- [Valider votre installation](#️-valider-votre-installation)
 - [Dépannage](#-dépannage)
 - [Sécurité](#-sécurité)
 - [Documentation de référence](#-documentation-de-référence)
@@ -796,6 +801,64 @@ le brancher sur votre infrastructure.
 python start.py both      # dans un terminal
 python start.py test      # dans un autre
 ```
+
+---
+
+## ✔️ Valider votre installation
+
+Les tests automatisés couvrent la logique du pipeline, mais **certaines choses
+ne peuvent être validées que sur votre lab** : elles dépendent de vos clés API,
+de votre instance TheHive et de vos privilèges système.
+
+Déroulez cette checklist une fois, dans l'ordre. Chaque ligne se vérifie en une
+commande.
+
+| # | Ce qu'on valide | Commande | Résultat attendu |
+|---|-----------------|----------|------------------|
+| 1 | Le pipeline lui-même | `python start.py unit` | `toutes les suites sont vertes` |
+| 2 | La chaîne complète, sans serveur réel | `python start.py e2e` | `44/44 verifications OK` |
+| 3 | Configuration lue correctement | `python start.py status` | vos URL et clés, pas de `VIDE` |
+| 4 | **Clé VirusTotal valide** | `curl localhost:5000/vt-test` | `{"status": "ok"}` |
+| 5 | **TheHive joignable + clé bonne** | `curl localhost:5000/health` | `"thehive": true` |
+| 6 | **Analyseurs Cortex visibles** | `python start.py cortex` | un nombre **> 0** |
+| 7 | **Blocage pare-feu réel** | `python start.py test-block 203.0.113.10` | `✅ Le blocage firewall fonctionne` |
+| 8 | **Réponse fichier opérationnelle** | `python start.py files` | `Opérationnelle : ✅ oui` |
+| 9 | Bout en bout réel | `curl localhost:5000/test` | un cas apparaît dans TheHive |
+
+Les lignes **4 à 8 échoueront tant que la configuration n'est pas complète** —
+c'est normal, et le message d'erreur indique quoi corriger.
+
+### Point important sur VirusTotal
+
+VirusTotal **ne supprime rien**. C'est un service de consultation : il répond
+« ce hash est vu comme malveillant par 58 moteurs sur 72 ». Rien de plus.
+
+C'est **le Service B qui agit** sur la base de ce verdict :
+
+```
+VirusTotal dit « malveillant »
+        │
+        ▼
+Service B ajoute le tag vt-malicious au cas
+        │
+        ├──► si c'est une IP    → blocage pare-feu (si ACTIVE_RESPONSE=true)
+        │
+        └──► si c'est un hash   → recherche du fichier dans FILE_SCAN_PATHS
+                                  puis quarantaine ou suppression
+                                  (si FILE_RESPONSE_ENABLED=true)
+```
+
+Conséquence directe : **le pipeline ne peut neutraliser un fichier que s'il se
+trouve dans un dossier listé dans `FILE_SCAN_PATHS`**, sur la machine où tourne
+le Service B. Un fichier malveillant sur un poste distant non partagé sera
+signalé dans le cas TheHive et notifié sur Telegram, mais pas supprimé — il n'y
+a pas d'agent déployé sur les postes.
+
+Pour couvrir des postes distants, deux options :
+
+1. monter leur partage réseau et l'ajouter à `FILE_SCAN_PATHS` ;
+2. écrire un responder Cortex qui pilote votre EDR
+   ([documentation](https://github.com/TheHive-Project/CortexDocs/blob/master/api/how-to-create-a-responder.md)).
 
 ---
 
