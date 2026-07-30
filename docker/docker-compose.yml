@@ -105,10 +105,11 @@ services:
       # Elasticsearch bascule alors sur niofs : un peu plus lent que mmapfs,
       # sans conséquence à l'échelle d'un lab.
       - node.store.allow_mmap=${ES_ALLOW_MMAP:-false}
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
+    # Pas de « ulimits: memlock » ici : lever RLIMIT_MEMLOCK est interdit
+    # dans un conteneur LXC non privilégié et fait échouer la création du
+    # conteneur avec « error setting rlimit type 8: operation not permitted ».
+    # Cette limite ne sert qu'avec bootstrap.memory_lock=true, que cette
+    # stack n'active pas.
     volumes:
       - elasticsearchdata:/usr/share/elasticsearch/data
     networks:

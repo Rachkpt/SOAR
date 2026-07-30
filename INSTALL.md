@@ -945,6 +945,33 @@ curl -I https://docker.elastic.co/v2/
 
 ---
 
+### `error setting rlimit type 8: operation not permitted`
+
+Le conteneur Elasticsearch refuse de démarrer. `rlimit type 8` est
+`RLIMIT_MEMLOCK` : lever cette limite est interdit dans un conteneur LXC non
+privilégié.
+
+**Corrigé** : la directive `ulimits: memlock` a été retirée du compose. Elle
+n'était utile qu'avec `bootstrap.memory_lock=true`, que cette stack n'active
+pas. Mettez le dépôt à jour :
+
+```bash
+cd SOAR
+git pull
+cd docker
+docker compose up -d
+```
+
+Si le conteneur reste bloqué en `Created`, forcez sa recréation :
+
+```bash
+docker compose rm -sf elasticsearch
+docker compose up -d elasticsearch
+docker compose logs -f elasticsearch
+```
+
+---
+
 ### `dial tcp [2600:...]:443: connect: network is unreachable`
 
 L'adresse entre crochets est une **IPv6**. Le DNS renvoie un enregistrement AAAA
