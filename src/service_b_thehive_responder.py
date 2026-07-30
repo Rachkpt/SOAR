@@ -42,6 +42,7 @@ from datetime import datetime, timedelta
 import requests
 import urllib3
 
+from file_responder import FileResponder
 from soc_common import (
     DATA_DIR, LOGS_DIR, Observable, Telegram, TheHiveClient,
     enable_utf8_console, env_bool, env_int, env_str, load_dotenv,
@@ -96,6 +97,15 @@ class Config:
         self.BLOCK_ON_PORTSCAN   = env_bool("BLOCK_ON_PORTSCAN", True)
         self.BLOCK_ON_THREAT     = env_bool("BLOCK_ON_THREAT", True)
         self.BLOCK_ALL_IPS       = env_bool("BLOCK_ALL_IPS", False)
+
+        # Réponse sur les fichiers malveillants (recherche par hash)
+        self.FILE_RESPONSE_ENABLED = env_bool("FILE_RESPONSE_ENABLED", False)
+        self.FILE_RESPONSE_MODE    = env_str("FILE_RESPONSE_MODE", "quarantine")
+        self.FILE_SCAN_PATHS       = [p for p in re.split(
+            r"[;,]", env_str("FILE_SCAN_PATHS", "")) if p.strip()]
+        self.QUARANTINE_DIR        = env_str("QUARANTINE_DIR", str(DATA_DIR / "quarantine"))
+        self.FILE_MAX_SIZE_MB      = env_int("FILE_MAX_SIZE_MB", 200)
+        self.FILE_MAX_FILES        = env_int("FILE_MAX_FILES", 200000)
 
         self.TELEGRAM_ENABLED = env_bool("TELEGRAM_ENABLED", False)
         self.TELEGRAM_TOKEN   = env_str("TELEGRAM_TOKEN")
@@ -955,6 +965,22 @@ def extract_domains(alert_data: dict, observables: list) -> list:
 cortex_registry = CortexRegistry()
 blacklist       = BlacklistManager()
 state           = StateManager()
+file_responder  = FileResponder(
+    enabled=cfg.FILE_RESPONSE_ENABLED,
+    mode=cfg.FILE_RESPONSE_MODE,
+    scan_paths=cfg.FILE_SCAN_PATHS,
+    quarantine_dir=cfg.QUARANTINE_DIR,
+    max_size_mb=cfg.FILE_MAX_SIZE_MB,
+    max_files=cfg.FILE_MAX_FILES,
+    logger=log,
+    notifier=notify,
+)
+
+for _path, _why in file_responder.rejected_paths:
+    log.error("FILE_SCAN_PATHS : « %s » refusé — %s", _path, _why)
+if cfg.FILE_RESPONSE_ENABLED and not file_responder.ready:
+    log.error("FILE_RESPONSE_ENABLED=true mais aucun dossier valide à analyser "
+              "— renseigner FILE_SCAN_PATHS dans .env")
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -1010,7 +1036,7 @@ class AlertProcessor:
         # ── 2. Traitement de chaque observable ───────────────────
         cortex_registry.refresh_if_needed()
         vt_results, misp_hits, blocked_ips, actions = {}, [], [], []
-        cortex_threads = []
+        cortex_threads, malicious_hashes = [], []
 
         targets = ([("ip", ip) for ip in ips]
                    + [("hash", h) for h in hashes]
@@ -1054,6 +1080,15 @@ class AlertProcessor:
             if datatype == "ip":
                 self._maybe_block(case_id, case_num, value, severity, threats,
                                   vt_results, misp_hits, blocked_ips, actions)
+
+            # 2e. Hash confirmé malveillant → réponse sur le fichier
+            if datatype == "hash" and (VT.is_malicious(vt) or value in misp_hits):
+                malicious_hashes.append(value)
+
+        # ── 2f. Recherche et neutralisation des fichiers ─────────
+        if malicious_hashes:
+            thehive.add_tag(case_id, "malicious-file")
+            self._start_file_response(case_id, case_num, malicious_hashes, actions)
 
         # ── 3. Rapport ───────────────────────────────────────────
         self._write_summary(case_id, case_num, alert_id, title, ips, hashes, domains,
@@ -1263,6 +1298,63 @@ class AlertProcessor:
             actions.append("❌ Blocage échoué pour {} : {}".format(ip, error))
             notify("❌ <b>Blocage impossible</b>\nIP : <code>{}</code>\n{}".format(ip, error))
 
+    # ── réponse sur fichiers ─────────────────────────────────────
+    @staticmethod
+    def _start_file_response(case_id, case_num, hashes, actions):
+        """Cherche les fichiers correspondant aux hashes malveillants confirmés.
+
+        L'analyse disque peut durer : elle tourne en tâche de fond et publie
+        son résultat dans un commentaire dédié du cas.
+        """
+        if not file_responder.enabled:
+            actions.append("📁 {} hash(es) malveillant(s) — réponse fichier désactivée "
+                           "(FILE_RESPONSE_ENABLED=false)".format(len(hashes)))
+            return None
+        if not file_responder.ready:
+            actions.append("📁 Réponse fichier active mais aucun dossier valide "
+                           "dans FILE_SCAN_PATHS")
+            return None
+
+        actions.append("📁 Recherche de {} hash(es) sur {} dossier(s) — mode {}".format(
+            len(hashes), len(file_responder.scan_paths), file_responder.mode))
+
+        def _worker():
+            reason = "hash confirmé malveillant — cas #{}".format(case_num)
+            try:
+                results = file_responder.respond(hashes, reason=reason)
+            except Exception as exc:      # noqa: BLE001 — ne doit jamais tuer le service
+                log.exception("Réponse fichier en échec : %s", exc)
+                thehive.add_comment(case_id,
+                                    "### 📁 Réponse sur fichiers\n\n"
+                                    "❌ Analyse interrompue : `{}`".format(exc))
+                return
+
+            if not results:
+                thehive.add_comment(
+                    case_id,
+                    "### 📁 Réponse sur fichiers\n\n"
+                    "Aucun fichier correspondant aux hashes suivants n'a été trouvé "
+                    "dans les dossiers surveillés :\n\n{}\n\n"
+                    "Dossiers analysés : {}\n\n*SOC Pipeline v{}*".format(
+                        "\n".join("- `{}`".format(h) for h in hashes),
+                        ", ".join("`{}`".format(p) for p in file_responder.scan_paths),
+                        VERSION))
+                return
+
+            neutralized = [r for r in results if r.get("success")
+                           and r.get("action") in ("quarantine", "delete")]
+            if neutralized:
+                thehive.add_tag(case_id, "file-neutralized")
+            thehive.add_comment(case_id, "{}\n\n*SOC Pipeline v{}*".format(
+                file_responder.summary_md(results), VERSION))
+            log.warning("Réponse fichier terminée : %d action(s), %d neutralisation(s)",
+                        len(results), len(neutralized))
+
+        thread = threading.Thread(target=_worker, daemon=True,
+                                  name="file-response-{}".format(case_num))
+        thread.start()
+        return thread
+
     # ── rapport ──────────────────────────────────────────────────
     @staticmethod
     def _write_summary(case_id, case_num, alert_id, title, ips, hashes, domains,
@@ -1405,6 +1497,9 @@ def print_banner() -> None:
         ("MISP", "✅ actif" if cfg.misp_ready else "⚪ désactivé"),
         ("Blocage", "🔴 RÉEL ({})".format("Administrateur" if blacklist.admin else "SANS DROITS !")
             if cfg.ACTIVE_RESPONSE else "⚠️ SIMULATION"),
+        ("Fichiers", "🔴 {} sur {} dossier(s)".format(
+            file_responder.mode, len(file_responder.scan_paths))
+            if file_responder.ready else "⚪ désactivée"),
         ("Cadence", "{} min de blocage — poll {}s".format(
             cfg.BLOCK_DURATION_MIN, cfg.POLL_INTERVAL_SEC)),
         ("Logs", str(cfg.LOG_FILE)),
@@ -1471,7 +1566,10 @@ def cli_status() -> int:
     for datatype in sorted(cortex_registry.by_type):
         names = [name for name, _, _ in cortex_registry.by_type[datatype][:4]]
         print("   [{}] {}".format(datatype, ", ".join(names)))
+    print("Réponse fichier :", "✅ {}".format(file_responder.mode)
+          if file_responder.ready else "❌ inactive")
     cli_list()
+    file_responder.print_status()
     return 0
 
 
@@ -1479,6 +1577,114 @@ def cli_reload_cortex() -> int:
     count = cortex_registry.load()
     print("Cortex : {} analyseur(s) détecté(s) via {}".format(count, cortex_registry.source))
     return 0 if count else 1
+
+
+def cli_test_block(ip: str) -> int:
+    """Prouve que le blocage firewall fonctionne réellement, de bout en bout."""
+    if not is_valid_ip(ip):
+        print("Adresse IP invalide : {}".format(ip))
+        return 2
+    if is_internal(ip):
+        print("⚠️  {} est une IP interne : à ne tester que si vous savez ce que "
+              "vous faites.".format(ip))
+
+    print("\n=== Test du blocage firewall ===")
+    print("Cible            :", ip)
+    print("Plateforme       :", "Windows / netsh" if IS_WINDOWS else "Linux / iptables")
+    print("ACTIVE_RESPONSE  :", "✅ true" if cfg.ACTIVE_RESPONSE else "❌ false")
+    print("Privilèges       :", "✅ admin/root" if blacklist.admin else "❌ insuffisants")
+
+    if not cfg.ACTIVE_RESPONSE:
+        print("\n❌ Impossible : mettre ACTIVE_RESPONSE=true dans .env, puis relancer.")
+        return 1
+    if not blacklist.admin:
+        print("\n❌ Impossible : privilèges insuffisants.")
+        print("   Windows : PowerShell → « Exécuter en tant qu'administrateur »")
+        print("   Linux   : sudo python3 start.py test-block {}".format(ip))
+        return 1
+
+    print("\n1/3 — pose de la règle...")
+    if not Firewall.block(ip):
+        print("❌ Le firewall a refusé la règle. Voir les journaux ci-dessus.")
+        return 1
+    print("    ✅ règle posée")
+
+    print("2/3 — vérification auprès du système...")
+    if IS_WINDOWS:
+        check = Firewall._run(["netsh", "advfirewall", "firewall", "show", "rule",
+                               "name={}".format(Firewall._rule_name(ip, "IN"))])
+        found = bool(check and check.returncode == 0 and "SOC_BLOCK" in (check.stdout or ""))
+    else:
+        binary = "ip6tables" if ":" in ip else "iptables"
+        check  = Firewall._run([binary, "-C", "INPUT", "-s", ip, "-j", "DROP"])
+        found  = bool(check and check.returncode == 0)
+    print("    {} règle {}".format("✅" if found else "❌",
+                                    "présente dans le firewall" if found else "INTROUVABLE"))
+
+    print("3/3 — retrait de la règle...")
+    Firewall.unblock(ip)
+    print("    ✅ règle retirée\n")
+
+    if found:
+        print("✅ Le blocage firewall fonctionne. Les IP malveillantes seront "
+              "réellement bloquées {} min.".format(cfg.BLOCK_DURATION_MIN))
+        return 0
+    print("❌ La règle n'a pas été retrouvée : le blocage ne serait pas effectif.")
+    return 1
+
+
+def cli_files() -> int:
+    file_responder.print_status()
+    file_responder.print_quarantine()
+    return 0
+
+
+def cli_scan(value: str) -> int:
+    """Recherche un hash dans les dossiers surveillés et applique le mode configuré."""
+    from file_responder import normalize_hash
+    if not normalize_hash(value):
+        print("Hash invalide : attendu 32 (MD5), 40 (SHA1) ou 64 (SHA256) "
+              "caractères hexadécimaux.")
+        return 2
+    if not file_responder.enabled:
+        print("Réponse fichier désactivée — mettre FILE_RESPONSE_ENABLED=true dans .env")
+        return 1
+    if not file_responder.ready:
+        print("Aucun dossier valide à analyser — renseigner FILE_SCAN_PATHS dans .env")
+        file_responder.print_status()
+        return 1
+
+    print("Recherche de {} (mode {}) dans :".format(value, file_responder.mode))
+    for path in file_responder.scan_paths:
+        print("   ", path)
+    results = file_responder.respond([value], reason="recherche manuelle")
+    if not results:
+        print("\nAucun fichier correspondant.")
+        return 0
+    print("")
+    for result in results:
+        print("  {} {} → {}".format(
+            "✅" if result.get("success") else "❌",
+            result.get("action"), result.get("path")))
+    return 0
+
+
+def cli_restore(entry_id: str) -> int:
+    result = file_responder.restore(entry_id)
+    if result.get("success"):
+        print("✅ Fichier restauré : {}".format(result["path"]))
+        return 0
+    print("❌ Restauration impossible : {}".format(result.get("error")))
+    return 1
+
+
+def cli_purge(entry_id: str) -> int:
+    result = file_responder.purge(entry_id)
+    if result.get("success"):
+        print("✅ Élément supprimé définitivement de la quarantaine : {}".format(entry_id))
+        return 0
+    print("❌ Suppression impossible : {}".format(result.get("error")))
+    return 1
 
 
 def main(argv=None) -> int:
@@ -1493,9 +1699,20 @@ def main(argv=None) -> int:
             return cli_status()
         if command in ("cortex", "analyzers"):
             return cli_reload_cortex()
+        if command in ("test-block", "testblock") and len(argv) >= 2:
+            return cli_test_block(argv[1])
+        if command in ("files", "quarantine"):
+            return cli_files()
+        if command == "scan" and len(argv) >= 2:
+            return cli_scan(argv[1])
+        if command == "restore" and len(argv) >= 2:
+            return cli_restore(argv[1])
+        if command == "purge" and len(argv) >= 2:
+            return cli_purge(argv[1])
         if command not in ("run", "start"):
-            print("Usage : service_b_thehive_responder.py "
-                  "[run | status | list | unblock <ip> | cortex]")
+            print("Usage : service_b_thehive_responder.py [run | status | list |\n"
+                  "        unblock <ip> | test-block <ip> | cortex |\n"
+                  "        files | scan <hash> | restore <id> | purge <id>]")
             return 2
     return Poller().run()
 

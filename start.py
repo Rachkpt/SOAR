@@ -28,6 +28,7 @@ Usage :
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -93,6 +94,7 @@ LOGS_DIR    = ROOT / "logs"
 SERVICE_A   = SRC_DIR / "service_a_splunk_to_thehive.py"
 SERVICE_B   = SRC_DIR / "service_b_thehive_responder.py"
 UNIT_TESTS  = TESTS_DIR / "run_tests.py"
+E2E_TESTS   = TESTS_DIR / "test_integration.py"
 ENV_FILE    = ROOT / ".env"
 ENV_EXAMPLE = ROOT / ".env.example"
 REQ_FILE    = ROOT / "requirements.txt"
@@ -508,6 +510,47 @@ def is_admin() -> bool:
         return False
 
 
+def elevate(args: list) -> int:
+    """Relance start.py avec les privilèges administrateur / root."""
+    if is_admin():
+        ok("Déjà administrateur — rien à faire")
+        return 0
+
+    command = " ".join(args) or "both"
+    if IS_WINDOWS:
+        hdr("Relance en tant qu'administrateur")
+        print(c("m", "  Une fenêtre de confirmation Windows va s'ouvrir (UAC)."))
+        try:
+            import ctypes
+            params = '"{}" {}'.format(Path(__file__).resolve(), command)
+            result = ctypes.windll.shell32.ShellExecuteW(
+                None, "runas", PYTHON, params, str(ROOT), 1)
+            if int(result) > 32:
+                ok("Nouvelle fenêtre lancée en administrateur")
+                print(c("m", "  Les services tournent désormais dans cette fenêtre."))
+                return 0
+            err("Élévation refusée ou impossible (code {})".format(result))
+        except Exception as exc:              # noqa: BLE001 — API Windows
+            err("Élévation impossible : {}".format(exc))
+        print("\n  Solution manuelle :")
+        print("    {}".format(c("c", "clic droit sur PowerShell → "
+                                "« Exécuter en tant qu'administrateur »")))
+        print("    {}".format(c("c", "cd {} ; python start.py {}".format(ROOT, command))))
+        return 1
+
+    hdr("Relance avec sudo")
+    if not shutil.which("sudo"):
+        err("sudo est introuvable — se connecter en root puis relancer")
+        return 1
+    try:
+        return subprocess.run(
+            ["sudo", PYTHON, str(Path(__file__).resolve())] + (args or ["both"]),
+            cwd=str(ROOT)).returncode
+    except OSError as exc:
+        err("Relance impossible : {}".format(exc))
+        return 1
+
+
 def preflight() -> bool:
     """Contrôles avant lancement. Retourne False si un blocage est fatal."""
     DATA_DIR.mkdir(exist_ok=True)
@@ -532,9 +575,22 @@ def preflight() -> bool:
             issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_TOKEN est vide")
         if not cfg.get("TELEGRAM_CHAT_ID"):
             issues.append("TELEGRAM_ENABLED=true mais TELEGRAM_CHAT_ID est vide")
-    if cfg.get("ACTIVE_RESPONSE", "false").strip().lower() == "true" and not is_admin():
+    active = cfg.get("ACTIVE_RESPONSE", "false").strip().lower() == "true"
+    if active and not is_admin():
         issues.append("ACTIVE_RESPONSE=true mais le script n'est pas admin/root "
-                      "— le blocage firewall échouera")
+                      "— AUCUNE IP NE SERA BLOQUÉE. Relance : python start.py elevate")
+    if not active:
+        issues.append("ACTIVE_RESPONSE=false — mode simulation : les IP malveillantes "
+                      "sont détectées et journalisées, mais PAS bloquées")
+
+    mode = cfg.get("FILE_RESPONSE_MODE", "quarantine")
+    if cfg.get("FILE_RESPONSE_ENABLED", "false").strip().lower() == "true":
+        if not cfg.get("FILE_SCAN_PATHS", "").strip():
+            issues.append("FILE_RESPONSE_ENABLED=true mais FILE_SCAN_PATHS est vide "
+                          "— aucun fichier malveillant ne sera recherché")
+        elif mode == "delete":
+            issues.append("FILE_RESPONSE_MODE=delete — les fichiers malveillants seront "
+                          "SUPPRIMÉS définitivement (mode « quarantine » réversible)")
 
     if issues:
         print("")
@@ -628,6 +684,19 @@ def run_unit_tests() -> int:
     return subprocess.run([PYTHON, str(UNIT_TESTS)], cwd=str(ROOT)).returncode
 
 
+def run_e2e_tests() -> int:
+    """Chaîne complète contre un faux TheHive : aucun serveur réel requis."""
+    hdr("Test d'intégration bout en bout (TheHive simulé)")
+    if not E2E_TESTS.exists():
+        err("Fichier de test introuvable : {}".format(E2E_TESTS))
+        return 1
+    if not check_deps():
+        return 1
+    print(c("m", "  Démarre un faux TheHive, le vrai Service A et le vrai Service B."))
+    print(c("m", "  Aucune connexion Internet, aucune règle pare-feu posée.\n"))
+    return subprocess.run([PYTHON, str(E2E_TESTS)], cwd=str(ROOT)).returncode
+
+
 def run_tests() -> None:
     hdr("Tests end-to-end de l'intégration")
     cfg  = load_env()
@@ -709,20 +778,32 @@ def show_logs(lines: int = 30) -> None:
 # ══════════════════════════════════════════════════════════════════
 # MENU
 # ══════════════════════════════════════════════════════════════════
+def _ask_and_test_block():
+    ip = input("  {} IP à tester (ex. 203.0.113.10) : ".format(c("c", "→"))).strip()
+    if not ip:
+        warn("Aucune IP saisie")
+        return 2
+    return run_service_command(["test-block", ip])
+
+
 MENU_ENTRIES = [
     ("1", "Installer les dépendances Python", install_deps),
     ("2", "Créer / réinitialiser le fichier .env", init_env),
     ("3", "Lancer le Service A (webhook Splunk → TheHive)", launch_service_a),
     ("4", "Lancer le Service B (Cortex + MISP + blocage)", launch_service_b),
     ("5", "Lancer A + B ensemble", launch_both),
-    ("6", "Configurer Telegram", configure_telegram),
-    ("7", "Tester Telegram", test_telegram),
-    ("8", "État de l'intégration", check_status),
-    ("9", "Tests end-to-end (services lancés)", run_tests),
-    ("10", "Tests unitaires (hors ligne)", run_unit_tests),
-    ("11", "Analyseurs Cortex détectés", lambda: run_service_command(["cortex"])),
-    ("12", "IPs actuellement bloquées", lambda: run_service_command(["list"])),
-    ("13", "Afficher les journaux", show_logs),
+    ("6", "Relancer en administrateur (blocage réel)", lambda: elevate(["both"])),
+    ("7", "Configurer Telegram", configure_telegram),
+    ("8", "Tester Telegram", test_telegram),
+    ("9", "État de l'intégration", check_status),
+    ("10", "Tester le blocage firewall sur une IP", _ask_and_test_block),
+    ("11", "Réponse fichiers + quarantaine", lambda: run_service_command(["files"])),
+    ("12", "Analyseurs Cortex détectés", lambda: run_service_command(["cortex"])),
+    ("13", "IPs actuellement bloquées", lambda: run_service_command(["list"])),
+    ("14", "Tests unitaires (hors ligne)", run_unit_tests),
+    ("15", "Test d'intégration bout en bout (TheHive simulé)", run_e2e_tests),
+    ("16", "Tests end-to-end (services réels lancés)", run_tests),
+    ("17", "Afficher les journaux", show_logs),
 ]
 BLOCKING_CHOICES = {"3", "4", "5"}
 
@@ -791,22 +872,38 @@ def menu() -> None:
 USAGE = """
 Usage : python start.py [commande]
 
-  install          Installer les dépendances Python
-  init             Créer le .env depuis .env.example
-  a                Service A — webhook Splunk → TheHive
-  b                Service B — Cortex + MISP + blocage firewall
-  both             Lancer A + B avec redémarrage automatique
-  status           État complet de l'intégration
-  test             Tests end-to-end (services lancés)
-  unit             Tests unitaires (hors ligne)
-  telegram         Envoyer un message de test Telegram
-  telegram-config  Configurer Telegram pas à pas
-  list             Lister les IPs bloquées
-  unblock <ip>     Débloquer une IP
-  cortex           Lister les analyseurs Cortex détectés
-  logs             Afficher la fin des journaux
+  Installation
+    install            Installer les dépendances Python
+    init               Créer le .env depuis .env.example
 
-  (sans argument)  Menu interactif
+  Services
+    a                  Service A — webhook Splunk → TheHive
+    b                  Service B — Cortex + MISP + blocage + fichiers
+    both               Lancer A + B avec redémarrage automatique
+    elevate [cmd]      Relancer en administrateur / root (blocage réel)
+
+  Réponse active — IP
+    test-block <ip>    Prouver que le blocage firewall fonctionne
+    list               Lister les IPs actuellement bloquées
+    unblock <ip>       Débloquer une IP
+
+  Réponse active — fichiers malveillants
+    files              État de la réponse fichier + quarantaine
+    scan <hash>        Chercher un hash et appliquer le mode configuré
+    restore <id>       Restaurer un fichier mis en quarantaine
+    purge <id>         Supprimer définitivement un élément en quarantaine
+
+  Diagnostic
+    status             État complet de l'intégration
+    cortex             Analyseurs Cortex détectés
+    unit               Tests unitaires (hors ligne)
+    e2e                Test d'intégration bout en bout (TheHive simulé)
+    test               Tests end-to-end (services réels lancés)
+    telegram           Envoyer un message de test Telegram
+    telegram-config    Configurer Telegram pas à pas
+    logs               Afficher la fin des journaux
+
+  (sans argument)      Menu interactif
 """
 
 
@@ -848,6 +945,8 @@ def main(argv=None) -> int:
         return 0
     if command in ("unit", "unittest", "unit-tests"):
         return run_unit_tests()
+    if command in ("e2e", "integration"):
+        return run_e2e_tests()
     if command in ("list", "ls", "blocked"):
         return run_service_command(["list"])
     if command == "unblock":
@@ -855,6 +954,30 @@ def main(argv=None) -> int:
             err("Usage : python start.py unblock <ip>")
             return 2
         return run_service_command(["unblock", args[1]])
+    if command in ("test-block", "testblock"):
+        if len(args) < 2:
+            err("Usage : python start.py test-block <ip>")
+            return 2
+        return run_service_command(["test-block", args[1]])
+    if command in ("files", "quarantine"):
+        return run_service_command(["files"])
+    if command == "scan":
+        if len(args) < 2:
+            err("Usage : python start.py scan <hash md5|sha1|sha256>")
+            return 2
+        return run_service_command(["scan", args[1]])
+    if command == "restore":
+        if len(args) < 2:
+            err("Usage : python start.py restore <id>  (voir python start.py files)")
+            return 2
+        return run_service_command(["restore", args[1]])
+    if command == "purge":
+        if len(args) < 2:
+            err("Usage : python start.py purge <id>")
+            return 2
+        return run_service_command(["purge", args[1]])
+    if command in ("elevate", "admin", "sudo"):
+        return elevate(args[1:])
     if command in ("cortex", "analyzers"):
         return run_service_command(["cortex"])
     if command in ("logs", "log"):

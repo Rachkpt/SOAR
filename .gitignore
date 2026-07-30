@@ -61,6 +61,7 @@ build/
 
 # --- Tests ---
 tests/.tmp/
+tests/.tmp-e2e/
 .pytest_cache/
 .coverage
 htmlcov/

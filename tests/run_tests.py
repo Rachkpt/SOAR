@@ -15,7 +15,8 @@ import sys
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
-SUITES = ["test_soc_common.py", "test_service_a.py", "test_service_b.py"]
+SUITES = ["test_soc_common.py", "test_file_responder.py",
+          "test_service_a.py", "test_service_b.py"]
 
 for _stream in (sys.stdout, sys.stderr):
     try:

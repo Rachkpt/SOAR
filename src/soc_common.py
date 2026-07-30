@@ -258,6 +258,7 @@ class TheHiveClient:
         self.retry_delay = max(0, retry_delay)
         self.verify      = verify
         self.log         = logger or logging.getLogger("thehive")
+        self._tag_lock   = threading.Lock()
         self.session     = requests.Session()
         self.session.headers.update({
             "Authorization": "Bearer {}".format(self.apikey),
@@ -361,13 +362,33 @@ class TheHiveClient:
         return resp is not None and resp.status_code in (200, 204)
 
     def add_tag(self, case_id: str, tag: str) -> bool:
-        case = self.get_case(case_id)
-        if case is None:
+        """Ajoute un tag sans perdre ceux posés en parallèle.
+
+        L'ajout est un cycle lecture-modification-écriture : sans verrou, deux
+        threads (typiquement les analyseurs Cortex) lisent la même liste et le
+        second écrasait le tag du premier. Le verrou sérialise les écritures du
+        processus, et la relecture juste avant le PATCH rattrape ce qu'un autre
+        processus aurait pu ajouter entre-temps.
+        """
+        with self._tag_lock:
+            for attempt in range(3):
+                case = self.get_case(case_id)
+                if case is None:
+                    return False
+                tags = list(case.get("tags") or [])
+                if tag in tags:
+                    return True
+                if self.update_case(case_id, {"tags": tags + [tag]}):
+                    # Relecture de contrôle : si le tag n'a pas survécu à une
+                    # écriture concurrente, on retente.
+                    check = self.get_case(case_id)
+                    if check is None or tag in (check.get("tags") or []):
+                        return True
+                if attempt < 2:
+                    time.sleep(0.3 * (attempt + 1))
+            self.log.warning("Tag « %s » non appliqué au cas %s après 3 essais",
+                             tag, case_id)
             return False
-        tags = list(case.get("tags") or [])
-        if tag in tags:
-            return True
-        return self.update_case(case_id, {"tags": tags + [tag]})
 
     def add_comment(self, case_id: str, message: str) -> bool:
         resp = self.request("POST", "/api/v1/case/{}/comment".format(case_id),
