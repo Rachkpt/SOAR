@@ -125,16 +125,24 @@ cd SOAR/docker
 # Dossiers montés par docker-compose
 mkdir -p cortex/logs server-configs logs files ssl
 
-# Requis par Elasticsearch, sinon le conteneur redémarre en boucle
-sudo sysctl -w vm.max_map_count=262144
-echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf
-
 # Optionnel : URL réelle de MISP
 echo "MISP_BASEURL=https://$(hostname -I | awk '{print $1}')" > .env
 
 docker compose up -d
 docker compose ps
 ```
+
+> 💡 **Pas besoin de toucher à `vm.max_map_count`.** La stack démarre
+> Elasticsearch avec `node.store.allow_mmap=false`, ce qui évite ce réglage
+> noyau — indispensable en conteneur LXC / Proxmox où `/proc/sys` est en
+> lecture seule. Sur une vraie VM, vous pouvez gagner en performance :
+>
+> ```bash
+> sudo sysctl -w vm.max_map_count=262144
+> echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf
+> echo 'ES_ALLOW_MMAP=true' >> .env
+> docker compose up -d elasticsearch
+> ```
 
 Compter **3 à 5 minutes** pour que tout démarre.
 
@@ -863,6 +871,95 @@ Pour couvrir des postes distants, deux options :
 ---
 
 ## 🐛 Dépannage
+
+### `sysctl: setting key "vm.max_map_count", ignoring: Read-only file system`
+
+Vous êtes dans un **conteneur LXC** (Proxmox, par exemple : l'invite affiche
+`root@CT122`), pas dans une VM. Un conteneur partage le noyau de l'hôte et n'a
+pas le droit d'en modifier les paramètres : `/proc/sys` y est en lecture seule.
+
+**Vous pouvez ignorer ce message** : depuis cette version la stack démarre
+Elasticsearch avec `node.store.allow_mmap=false`, qui supprime le besoin de ce
+réglage.
+
+Si vous voulez quand même les performances de `mmapfs`, le réglage se fait
+**sur l'hôte Proxmox**, pas dans le conteneur :
+
+```bash
+# Sur le nœud Proxmox, PAS dans le conteneur
+sysctl -w vm.max_map_count=262144
+echo 'vm.max_map_count=262144' >> /etc/sysctl.conf
+
+# Puis, dans le conteneur
+cd SOAR/docker
+echo 'ES_ALLOW_MMAP=true' >> .env
+docker compose up -d elasticsearch
+```
+
+> Un conteneur LXC destiné à faire tourner Docker a aussi besoin des options
+> `nesting=1` et `keyctl=1` dans sa configuration Proxmox
+> (**Options → Features**). Sans elles, Docker ne démarre pas du tout.
+
+---
+
+### `dial tcp: lookup docker.elastic.co ... i/o timeout`
+
+Le registre d'Elastic ne répond pas — DNS filtré, pare-feu, ou coupure
+temporaire. Les autres images passent parce qu'elles viennent de Docker Hub.
+
+**C'est déjà corrigé** : la stack tire désormais `elasticsearch:7.17.9` depuis
+Docker Hub. Mettez le dépôt à jour et relancez :
+
+```bash
+cd SOAR
+git pull
+cd docker
+docker compose up -d
+```
+
+Si vous tenez au registre officiel d'Elastic et que le DNS est le problème,
+donnez des résolveurs explicites à Docker :
+
+```bash
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{ "dns": ["1.1.1.1", "8.8.8.8"] }
+EOF
+sudo systemctl restart docker
+
+cd SOAR/docker
+echo 'ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:7.17.9' >> .env
+docker compose up -d
+```
+
+Vérifier la résolution depuis l'hôte :
+
+```bash
+getent hosts docker.elastic.co
+curl -I https://docker.elastic.co/v2/
+```
+
+---
+
+### Un `docker compose up -d` s'est arrêté en cours de téléchargement
+
+Aucun conteneur n'est créé (`docker compose ps` est vide) mais des images sont
+déjà téléchargées. Relancez simplement la commande : Docker reprend là où il
+s'est arrêté, les couches déjà tirées ne sont pas retéléchargées.
+
+```bash
+docker compose pull        # tirer toutes les images d'abord
+docker compose up -d       # puis démarrer
+docker compose ps          # doit lister 9 services
+```
+
+Pour repartir de zéro proprement :
+
+```bash
+docker compose down -v     # ⚠️ -v supprime aussi les données TheHive/MISP
+docker compose up -d
+```
+
+---
 
 ### `ModuleNotFoundError: No module named 'flask'`
 

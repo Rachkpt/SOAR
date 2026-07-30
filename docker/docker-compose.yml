@@ -5,8 +5,12 @@
 #  Lancement (depuis ce dossier) :
 #      cd docker
 #      mkdir -p cortex/logs server-configs logs files ssl
-#      sudo sysctl -w vm.max_map_count=262144      # requis par Elasticsearch
 #      docker compose up -d
+#
+#  Elasticsearch n'exige plus de regler vm.max_map_count : la stack
+#  utilise node.store.allow_mmap=false. Sur une vraie VM avec les droits
+#  necessaires, « sudo sysctl -w vm.max_map_count=262144 » puis
+#  ES_ALLOW_MMAP=true donne de meilleures performances.
 #
 #  ⚠️  Configuration de LAB : mots de passe par défaut, TLS auto-signé,
 #      services exposés sur 0.0.0.0. À durcir avant toute mise en ligne.
@@ -76,9 +80,15 @@ services:
 
   # ────────────────────────────────────────────────────────────────
   # Elasticsearch — moteur d'index de TheHive et de Cortex
+  #
+  # Image tirée de Docker Hub et non de docker.elastic.co : ce dernier
+  # est souvent injoignable derrière un pare-feu ou un resolveur DNS
+  # filtrant, alors que Docker Hub passe (c'est là que sont déjà tirées
+  # toutes les autres images de cette stack).
+  # Pour revenir au registre Elastic : ES_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:7.17.9
   # ────────────────────────────────────────────────────────────────
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.9
+    image: ${ES_IMAGE:-elasticsearch:7.17.9}
     restart: unless-stopped
     mem_limit: 768m
     ports:
@@ -89,6 +99,12 @@ services:
       - cluster.name=hive
       - http.host=0.0.0.0
       - ES_JAVA_OPTS=-Xms256m -Xmx256m
+      # Évite d'avoir à régler vm.max_map_count sur l'hôte. Indispensable
+      # en conteneur LXC / Proxmox, où /proc/sys est en lecture seule et
+      # où « sysctl -w » échoue avec « Read-only file system ».
+      # Elasticsearch bascule alors sur niofs : un peu plus lent que mmapfs,
+      # sans conséquence à l'échelle d'un lab.
+      - node.store.allow_mmap=${ES_ALLOW_MMAP:-false}
     ulimits:
       memlock:
         soft: -1
