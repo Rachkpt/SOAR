@@ -128,6 +128,11 @@ mkdir -p cortex/logs server-configs logs files ssl
 # Optionnel : URL réelle de MISP
 echo "MISP_BASEURL=https://$(hostname -I | awk '{print $1}')" > .env
 
+# Téléchargement des 9 images, avec réessais automatiques.
+# Recommandé : « docker compose up -d » abandonne tout dès qu'une seule
+# image échoue, alors que ce script reprend image par image.
+chmod +x pull-images.sh && ./pull-images.sh
+
 docker compose up -d
 docker compose ps
 ```
@@ -937,6 +942,68 @@ Vérifier la résolution depuis l'hôte :
 getent hosts docker.elastic.co
 curl -I https://docker.elastic.co/v2/
 ```
+
+---
+
+### `dial tcp [2600:...]:443: connect: network is unreachable`
+
+L'adresse entre crochets est une **IPv6**. Le DNS renvoie un enregistrement AAAA
+pour le CDN du registre, Docker essaie de s'y connecter, mais votre conteneur
+n'a pas de route IPv6 fonctionnelle. D'où « network is unreachable ».
+
+Ce n'est pas un problème du projet : c'est la configuration réseau du conteneur.
+
+**Solution la plus simple — désactiver IPv6 sur le conteneur.**
+Sur le nœud Proxmox, pas dans le conteneur :
+
+```bash
+# Interface graphique : CT → Network → net0 → IPv6 : « Static », champ vide
+# En ligne de commande, pour le conteneur 122 :
+pct set 122 --net0 name=eth0,bridge=vmbr0,ip=dhcp,ip6=manual
+pct reboot 122
+```
+
+Vérifier ensuite, dans le conteneur, qu'aucune IPv6 globale ne subsiste :
+
+```bash
+ip -6 addr show scope global      # ne doit rien afficher
+docker compose pull
+```
+
+**Alternative — forcer un DNS IPv4 pour Docker.** À tenter si vous ne pouvez pas
+toucher à la configuration Proxmox :
+
+```bash
+sudo tee /etc/docker/daemon.json > /dev/null <<'EOF'
+{ "dns": ["1.1.1.1", "8.8.8.8"], "ipv6": false }
+EOF
+sudo systemctl restart docker
+```
+
+C'est moins fiable : le résolveur continue de renvoyer des AAAA, Docker peut
+donc encore tenter l'IPv6 en premier. Si l'erreur persiste, revenez à la
+désactivation d'IPv6 côté Proxmox.
+
+---
+
+### Le téléchargement des images échoue sans arrêt
+
+`docker compose up -d` abandonne **tout** dès qu'une seule image échoue : sur une
+connexion instable, vous repartez de zéro à chaque tentative.
+
+Le dépôt fournit un script qui tire les images une par une, avec réessais :
+
+```bash
+cd SOAR/docker
+chmod +x pull-images.sh
+./pull-images.sh          # 5 tentatives par image
+./pull-images.sh 20       # 20 tentatives, pour un réseau vraiment capricieux
+
+docker compose up -d      # une fois toutes les images présentes
+```
+
+Les couches déjà téléchargées sont conservées entre deux tentatives : chaque
+relance repart où la précédente s'est arrêtée.
 
 ---
 
