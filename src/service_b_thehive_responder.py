@@ -922,6 +922,26 @@ def is_valid_ip(value: str) -> bool:
         return False
 
 
+def is_public_ip(value: str) -> bool:
+    """IP routable sur Internet — analysable par Cortex / VirusTotal / AbuseIPDB."""
+    try:
+        addr = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return False
+    return not (addr.is_private or addr.is_loopback or addr.is_link_local
+                or addr.is_multicast or addr.is_reserved or addr.is_unspecified)
+
+
+def _is_junk_ip(value: str) -> bool:
+    """Adresse jamais exploitable : multicast, broadcast, réservée, 0.0.0.0…"""
+    try:
+        addr = ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return True
+    return (addr.is_multicast or addr.is_reserved
+            or addr.is_unspecified or addr.is_link_local)
+
+
 def _observable_values(observables, datatypes) -> list:
     values = []
     for obs in observables or []:
@@ -945,7 +965,9 @@ def extract_ips(alert_data: dict, observables: list) -> list:
         for candidate in IP_RE.findall(str(alert_data.get("description", ""))):
             if is_valid_ip(candidate) and candidate not in ips:
                 ips.append(candidate)
-    return [ip for ip in ips if is_valid_ip(ip)]
+    # On garde les IP privées (utile pour BLOCK_ALL_IPS en lab) mais on écarte
+    # multicast / broadcast / réservées qui ne font que des jobs Cortex en échec.
+    return [ip for ip in ips if is_valid_ip(ip) and not _is_junk_ip(ip)]
 
 
 def extract_hashes(alert_data: dict, observables: list) -> list:
@@ -1137,16 +1159,24 @@ class AlertProcessor:
             dataType=datatype, data=value,
             message="Détecté dans l'alerte Splunk {}".format(alert_id),
             tags=tags, ioc=True))
+        if not obs_id:
+            # Déjà recopié depuis l'alerte lors de la promotion : on récupère
+            # son id existant pour pouvoir quand même lancer Cortex dessus.
+            obs_id = thehive.find_case_observable(case_id, datatype, value)
         if obs_id:
-            log.info("Observable ajouté au cas : [%s] %s", datatype, value)
+            log.info("Observable au cas : [%s] %s (id=%s)", datatype, value, obs_id)
         else:
-            log.warning("Observable non ajouté (déjà présent ?) : [%s] %s", datatype, value)
+            log.warning("Observable introuvable sur le cas : [%s] %s", datatype, value)
         return obs_id
 
     # ── cortex ───────────────────────────────────────────────────
     @staticmethod
     def _start_cortex(case_id, case_num, obs_id, datatype, value, actions):
         if not (cfg.CORTEX_ENABLED and obs_id):
+            return None
+        if datatype == "ip" and not is_public_ip(value):
+            log.info("Cortex ignoré pour %s (IP non publique)", value)
+            actions.append("Cortex ignoré pour {} (IP non publique)".format(value))
             return None
         analyzers = cortex_registry.get_for(datatype)
         if not analyzers:

@@ -37,6 +37,11 @@ alert udp any any -> any [53,67,68,69,123,161,162,389,520,1026,1027,1028,1029,11
 alert udp any any -> any ![53,67,68,69,123,161,162,389,520,1026,1027,1028,1029,1194,1434,1900,11211,12345,27017,51820] (msg:"POSSBL PORT SCAN (NMAP -sU)"; flow:to_server,stateless; classtype:attempted-recon; sid:3400008; priority:2; rev:6; threshold:type threshold, track by_src, count 7, seconds 135; dsize:0;)
 
 
+# SSH BRUTE FORCE / SCAN — connexions répétées vers le port 22
+
+alert tcp any any -> any 22 (msg:"POSSBL SSH BRUTE FORCE"; flow:to_server,stateless; flags:S; threshold:type both, track by_src, count 10, seconds 20; classtype:attempted-recon; sid:3400030; priority:2; rev:1;)
+
+
 # For all usages of destination port 4444:
 
 # TCP destination port: 4444

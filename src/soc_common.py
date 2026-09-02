@@ -405,6 +405,32 @@ class TheHiveClient:
             return thehive_id(data)
         return ""
 
+    def case_observables(self, case_id: str) -> list:
+        """Liste les observables d'un cas (via la Query API, fiable en TheHive 5)."""
+        data = self._json(self.request(
+            "POST", "/api/v1/query?name=case-observables",
+            payload={"query": [
+                {"_name": "getCase", "idOrName": case_id},
+                {"_name": "observables"},
+            ]}, retries=1))
+        return data if isinstance(data, list) else []
+
+    def find_case_observable(self, case_id: str, datatype: str, value: str) -> str:
+        """Retrouve l'id d'un observable déjà présent sur le cas.
+
+        La promotion d'une alerte en cas recopie automatiquement ses observables :
+        un second POST renvoie alors « déjà présent » et add_observable() rend "".
+        On récupère ici l'id existant pour pouvoir quand même lancer Cortex dessus.
+        """
+        target = str(value).strip()
+        for obs in self.case_observables(case_id):
+            if not isinstance(obs, dict):
+                continue
+            if (str(obs.get("dataType", "")).lower() == datatype.lower()
+                    and str(obs.get("data", "")).strip() == target):
+                return thehive_id(obs)
+        return ""
+
     # ── cortex (piloté par TheHive) ──────────────────────────────
     def cortex_analyzers(self) -> list:
         """Analyseurs connus de TheHive (tous serveurs Cortex connectés)."""
